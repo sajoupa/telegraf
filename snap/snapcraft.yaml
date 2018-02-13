@@ -11,6 +11,9 @@ apps:
     daemon: simple
 parts:
   telegraf:
-    source: https://github.com/influxdb/telegraf.git
-    go-importpath: github.com/influxdb/telegraf
-    plugin: go
+    source: .
+    plugin: nil
+    build: |
+      export GOPATH=$(pwd)/go
+      cd $GOPATH/src/github.com/influxdata/telegraf
+      make
