@@ -4,16 +4,31 @@ summary: Telegraf agent
 description: |
   Telegraf is an agent written in Go for collecting, processing, aggregating, and writing metrics
 confinement: classic
-grade: stable
+grade: devel
 apps:
   telegraf:
-    command: telegraf
+    command: bin/telegraf.wrapper
     daemon: simple
 parts:
   telegraf:
-    source: .
     plugin: nil
     build: |
+      cd ..
       export GOPATH=$(pwd)/go
+      export LDFLAGS=""
+      mkdir -p $GOPATH
+      go get -d github.com/influxdata/telegraf
       cd $GOPATH/src/github.com/influxdata/telegraf
+      git checkout tags/1.5.2
       make
+    install: |
+      mkdir $SNAPCRAFT_PART_INSTALL/bin
+      cp -p ../go/src/github.com/influxdata/telegraf/telegraf $SNAPCRAFT_PART_INSTALL/bin/telegraf
+  snap-wrappers:
+    plugin: dump
+    source: .
+    organize:
+      telegraf.wrapper: bin/telegraf.wrapper
+    prime:
+      - bin/telegraf.wrapper
+      - etc/telegraf.conf
