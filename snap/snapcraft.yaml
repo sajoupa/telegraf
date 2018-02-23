@@ -4,13 +4,14 @@ summary: Telegraf agent
 description: |
   Telegraf is an agent written in Go for collecting, processing, aggregating, and writing metrics
 confinement: classic
-grade: devel
+grade: stable
 apps:
   telegraf:
-    command: bin/telegraf.wrapper
+    command: 'bin/telegraf.wrapper'
     daemon: simple
 parts:
   telegraf:
+    after: [snap-wrappers]
     plugin: nil
     build: |
       cd ..
@@ -28,7 +29,7 @@ parts:
     plugin: dump
     source: .
     organize:
-      telegraf.wrapper: bin/telegraf.wrapper
-    prime:
+      telegraf.snap_wrapper: bin/telegraf.wrapper
+    stage:
       - bin/telegraf.wrapper
       - etc/telegraf.conf
