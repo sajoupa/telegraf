@@ -11,7 +11,7 @@ apps:
     daemon: simple
 parts:
   telegraf:
-    after: [snap-wrappers]
+    after: [snap-wrappers, go]
     plugin: nil
     build: |
       cd ..
@@ -33,3 +33,5 @@ parts:
     stage:
       - bin/telegraf.wrapper
       - etc/telegraf.conf
+  go:
+    source-tag: go1.8
