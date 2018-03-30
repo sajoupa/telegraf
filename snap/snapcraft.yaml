@@ -18,7 +18,6 @@ parts:
     build: |
       cd ..
       export GOPATH=$(pwd)/go
-      export LDFLAGS=""
       mkdir -p $GOPATH
       go get -d github.com/influxdata/telegraf
       cd $GOPATH/src/github.com/influxdata/telegraf
