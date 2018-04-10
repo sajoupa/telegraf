@@ -142,7 +142,7 @@ fieldfloat =
 fieldinteger =
 	(integer 'i') >begin %integer;
 
-fieldunsigned = 
+fieldunsigned =
 	(unsigned 'u') >begin %unsigned;
 
 false =
@@ -155,7 +155,7 @@ fieldbool =
 	(true | false) >begin %bool;
 
 fieldstringchar =
-	[^\\"] | '\\' [\\"];
+	[^\n\f\r\\"] | '\\' [\\"];
 
 fieldstring =
 	fieldstringchar* >begin %string;
@@ -224,6 +224,17 @@ align :=
 }%%
 
 %% write data;
+
+type Handler interface {
+	SetMeasurement(name []byte)
+	AddTag(key []byte, value []byte)
+	AddInt(key []byte, value []byte)
+	AddUint(key []byte, value []byte)
+	AddFloat(key []byte, value []byte)
+	AddString(key []byte, value []byte)
+	AddBool(key []byte, value []byte)
+	SetTimestamp(tm []byte)
+}
 
 type machine struct {
 	data       []byte
