@@ -4,7 +4,7 @@ BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT := $(shell git rev-parse --short HEAD)
 GOFILES ?= $(shell git ls-files '*.go')
 GOFMT ?= $(shell gofmt -l $(filter-out plugins/parsers/influx/machine.go, $(GOFILES)))
-BUILDFLAGS ?= 
+BUILDFLAGS ?=
 
 ifdef GOBIN
 PATH := $(GOBIN):$(PATH)
@@ -24,10 +24,10 @@ all:
 deps:
 	go get -u github.com/golang/lint/golint
 	go get github.com/sparrc/gdm
-	gdm restore
+	gdm restore --parallel=false
 
 telegraf:
-	go build -i -ldflags "$(LDFLAGS)" ./cmd/telegraf
+	go build -ldflags "$(LDFLAGS)" ./cmd/telegraf
 
 go-install:
 	go install -ldflags "-w -s $(LDFLAGS)" ./cmd/telegraf
@@ -44,7 +44,7 @@ fmt:
 
 fmtcheck:
 	@echo '[INFO] running gofmt to identify incorrectly formatted code...'
-	@if [ ! -z $(GOFMT) ]; then \
+	@if [ ! -z "$(GOFMT)" ]; then \
 		echo "[ERROR] gofmt has found errors in the following files:"  ; \
 		echo "$(GOFMT)" ; \
 		echo "" ;\
@@ -64,7 +64,7 @@ test-windows:
 # any common errors.
 vet:
 	@echo 'go vet $$(go list ./... | grep -v ./plugins/parsers/influx)'
-	@go vet $$(go list ./... | grep -v ./plugins/parsers/influx) ; if [ $$? -eq 1 ]; then \
+	@go vet $$(go list ./... | grep -v ./plugins/parsers/influx) ; if [ $$? -ne 0 ]; then \
 		echo ""; \
 		echo "go vet has found suspicious constructs. Please remediate any reported errors"; \
 		echo "to fix them before submitting code for review."; \
@@ -72,7 +72,7 @@ vet:
 	fi
 
 test-ci: fmtcheck vet
-	go test -short./...
+	go test -short ./...
 
 test-all: fmtcheck vet
 	go test ./...
