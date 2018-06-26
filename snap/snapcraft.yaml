@@ -12,6 +12,7 @@ apps:
 parts:
   telegraf:
     after: [snap-wrappers, go]
+    build-attributes: [no-patchelf]
     # We should use the go plugin but we can't until snapcraft supports gdm
     # See https://bugs.launchpad.net/snapcraft/+bug/1748600
     plugin: nil
