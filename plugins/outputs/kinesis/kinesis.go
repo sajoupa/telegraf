@@ -2,7 +2,6 @@ package kinesis
 
 import (
 	"log"
-	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,13 +16,14 @@ import (
 
 type (
 	KinesisOutput struct {
-		Region    string `toml:"region"`
-		AccessKey string `toml:"access_key"`
-		SecretKey string `toml:"secret_key"`
-		RoleARN   string `toml:"role_arn"`
-		Profile   string `toml:"profile"`
-		Filename  string `toml:"shared_credential_file"`
-		Token     string `toml:"token"`
+		Region      string `toml:"region"`
+		AccessKey   string `toml:"access_key"`
+		SecretKey   string `toml:"secret_key"`
+		RoleARN     string `toml:"role_arn"`
+		Profile     string `toml:"profile"`
+		Filename    string `toml:"shared_credential_file"`
+		Token       string `toml:"token"`
+		EndpointURL string `toml:"endpoint_url"`
 
 		StreamName         string     `toml:"streamname"`
 		PartitionKey       string     `toml:"partitionkey"`
@@ -59,6 +59,12 @@ var sampleConfig = `
   #role_arn = ""
   #profile = ""
   #shared_credential_file = ""
+
+  ## Endpoint to make request against, the correct endpoint is automatically
+  ## determined and this option should only be set if you wish to override the
+  ## default.
+  ##   ex: endpoint_url = "http://localhost:8000"
+  # endpoint_url = ""
 
   ## Kinesis StreamName must exist prior to starting telegraf.
   streamname = "StreamName"
@@ -108,17 +114,11 @@ func (k *KinesisOutput) Description() string {
 	return "Configuration for the AWS Kinesis output."
 }
 
-func checkstream(l []*string, s string) bool {
-	// Check if the StreamName exists in the slice returned from the ListStreams API request.
-	for _, stream := range l {
-		if *stream == s {
-			return true
-		}
-	}
-	return false
-}
-
 func (k *KinesisOutput) Connect() error {
+	if k.Partition == nil {
+		log.Print("E! kinesis : Deprecated paritionkey configuration in use, please consider using outputs.kinesis.partition")
+	}
+
 	// We attempt first to create a session to Kinesis using an IAMS role, if that fails it will fall through to using
 	// environment variables, and then Shared Credentials.
 	if k.Debug {
@@ -126,40 +126,22 @@ func (k *KinesisOutput) Connect() error {
 	}
 
 	credentialConfig := &internalaws.CredentialConfig{
-		Region:    k.Region,
-		AccessKey: k.AccessKey,
-		SecretKey: k.SecretKey,
-		RoleARN:   k.RoleARN,
-		Profile:   k.Profile,
-		Filename:  k.Filename,
-		Token:     k.Token,
+		Region:      k.Region,
+		AccessKey:   k.AccessKey,
+		SecretKey:   k.SecretKey,
+		RoleARN:     k.RoleARN,
+		Profile:     k.Profile,
+		Filename:    k.Filename,
+		Token:       k.Token,
+		EndpointURL: k.EndpointURL,
 	}
 	configProvider := credentialConfig.Credentials()
 	svc := kinesis.New(configProvider)
 
-	KinesisParams := &kinesis.ListStreamsInput{
-		Limit: aws.Int64(100),
-	}
-
-	resp, err := svc.ListStreams(KinesisParams)
-
-	if err != nil {
-		log.Printf("E! kinesis: Error in ListSteams API call : %+v \n", err)
-	}
-
-	if checkstream(resp.StreamNames, k.StreamName) {
-		if k.Debug {
-			log.Printf("E! kinesis: Stream Exists")
-		}
-		k.svc = svc
-		return nil
-	} else {
-		log.Printf("E! kinesis : You have configured a StreamName %+v which does not exist. exiting.", k.StreamName)
-		os.Exit(1)
-	}
-	if k.Partition == nil {
-		log.Print("E! kinesis : Deprecated paritionkey configuration in use, please consider using outputs.kinesis.partition")
-	}
+	_, err := svc.DescribeStreamSummary(&kinesis.DescribeStreamSummaryInput{
+		StreamName: aws.String(k.StreamName),
+	})
+	k.svc = svc
 	return err
 }
 

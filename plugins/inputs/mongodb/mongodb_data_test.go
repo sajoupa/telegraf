@@ -38,6 +38,13 @@ func TestAddNonReplStats(t *testing.T) {
 			NoTimeoutC:       0,
 			PinnedC:          0,
 			TotalC:           0,
+			DeletedD:         0,
+			InsertedD:        0,
+			ReturnedD:        0,
+			UpdatedD:         0,
+			CurrentC:         0,
+			AvailableC:       0,
+			TotalCreatedC:    0,
 		},
 		tags,
 	)
@@ -46,7 +53,7 @@ func TestAddNonReplStats(t *testing.T) {
 	d.AddDefaultStats()
 	d.flush(&acc)
 
-	for key, _ := range DefaultStats {
+	for key := range DefaultStats {
 		assert.True(t, acc.HasInt64Field("mongodb", key))
 	}
 }
@@ -67,7 +74,7 @@ func TestAddReplStats(t *testing.T) {
 	d.AddDefaultStats()
 	d.flush(&acc)
 
-	for key, _ := range MmapStats {
+	for key := range MmapStats {
 		assert.True(t, acc.HasInt64Field("mongodb", key))
 	}
 }
@@ -99,7 +106,7 @@ func TestAddWiredTigerStats(t *testing.T) {
 	d.AddDefaultStats()
 	d.flush(&acc)
 
-	for key, _ := range WiredTigerStats {
+	for key := range WiredTigerStats {
 		assert.True(t, acc.HasFloatField("mongodb", key))
 	}
 }
@@ -120,7 +127,7 @@ func TestAddShardStats(t *testing.T) {
 	d.AddDefaultStats()
 	d.flush(&acc)
 
-	for key, _ := range DefaultShardStats {
+	for key := range DefaultShardStats {
 		assert.True(t, acc.HasInt64Field("mongodb", key))
 	}
 }
@@ -149,8 +156,8 @@ func TestAddShardHostStats(t *testing.T) {
 	d.flush(&acc)
 
 	var hostsFound []string
-	for host, _ := range hostStatLines {
-		for key, _ := range ShardHostStats {
+	for host := range hostStatLines {
+		for key := range ShardHostStats {
 			assert.True(t, acc.HasInt64Field("mongodb_shard_stats", key))
 		}
 
@@ -182,43 +189,50 @@ func TestStateTag(t *testing.T) {
 	d.AddDefaultStats()
 	d.flush(&acc)
 	fields := map[string]interface{}{
-		"active_reads":          int64(0),
-		"active_writes":         int64(0),
-		"commands_per_sec":      int64(0),
-		"deletes_per_sec":       int64(0),
-		"flushes_per_sec":       int64(0),
-		"getmores_per_sec":      int64(0),
-		"inserts_per_sec":       int64(0),
-		"member_status":         "PRI",
-		"state":                 "PRIMARY",
-		"net_in_bytes":          int64(0),
-		"net_out_bytes":         int64(0),
-		"open_connections":      int64(0),
-		"queries_per_sec":       int64(0),
-		"queued_reads":          int64(0),
-		"queued_writes":         int64(0),
-		"repl_commands_per_sec": int64(0),
-		"repl_deletes_per_sec":  int64(0),
-		"repl_getmores_per_sec": int64(0),
-		"repl_inserts_per_sec":  int64(0),
-		"repl_queries_per_sec":  int64(0),
-		"repl_updates_per_sec":  int64(0),
-		"repl_lag":              int64(0),
-		"repl_oplog_window_sec": int64(0),
-		"resident_megabytes":    int64(0),
-		"updates_per_sec":       int64(0),
-		"vsize_megabytes":       int64(0),
-		"ttl_deletes_per_sec":   int64(0),
-		"ttl_passes_per_sec":    int64(0),
-		"jumbo_chunks":          int64(0),
-		"total_in_use":          int64(0),
-		"total_available":       int64(0),
-		"total_created":         int64(0),
-		"total_refreshing":      int64(0),
-		"cursor_timed_out":      int64(0),
-		"cursor_no_timeout":     int64(0),
-		"cursor_pinned":         int64(0),
-		"cursor_total":          int64(0),
+		"active_reads":              int64(0),
+		"active_writes":             int64(0),
+		"commands_per_sec":          int64(0),
+		"deletes_per_sec":           int64(0),
+		"flushes_per_sec":           int64(0),
+		"getmores_per_sec":          int64(0),
+		"inserts_per_sec":           int64(0),
+		"member_status":             "PRI",
+		"state":                     "PRIMARY",
+		"net_in_bytes":              int64(0),
+		"net_out_bytes":             int64(0),
+		"open_connections":          int64(0),
+		"queries_per_sec":           int64(0),
+		"queued_reads":              int64(0),
+		"queued_writes":             int64(0),
+		"repl_commands_per_sec":     int64(0),
+		"repl_deletes_per_sec":      int64(0),
+		"repl_getmores_per_sec":     int64(0),
+		"repl_inserts_per_sec":      int64(0),
+		"repl_queries_per_sec":      int64(0),
+		"repl_updates_per_sec":      int64(0),
+		"repl_lag":                  int64(0),
+		"repl_oplog_window_sec":     int64(0),
+		"resident_megabytes":        int64(0),
+		"updates_per_sec":           int64(0),
+		"vsize_megabytes":           int64(0),
+		"ttl_deletes_per_sec":       int64(0),
+		"ttl_passes_per_sec":        int64(0),
+		"jumbo_chunks":              int64(0),
+		"total_in_use":              int64(0),
+		"total_available":           int64(0),
+		"total_created":             int64(0),
+		"total_refreshing":          int64(0),
+		"cursor_timed_out":          int64(0),
+		"cursor_no_timeout":         int64(0),
+		"cursor_pinned":             int64(0),
+		"cursor_total":              int64(0),
+		"document_deleted":          int64(0),
+		"document_inserted":         int64(0),
+		"document_returned":         int64(0),
+		"document_updated":          int64(0),
+		"connections_current":       int64(0),
+		"connections_available":     int64(0),
+		"connections_total_created": int64(0),
 	}
 	acc.AssertContainsTaggedFields(t, "mongodb", fields, stateTags)
 }
