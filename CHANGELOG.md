@@ -11,7 +11,9 @@
 #### New Inputs
 
 - [http_listener_v2](/plugins/inputs/http_listener_v2/README.md) - Contributed by @jul1u5
-- [nginx_plus_api](/plugins/inputs/nginx_plus_api/README.md) - Contributed by Bugagazavr
+- [ipvs](/plugins/inputs/ipvs/README.md) - Contributed by @amoghe
+- [nginx_plus_api](/plugins/inputs/nginx_plus_api/README.md) - Contributed by @Bugagazavr
+- [wireless](/plugins/inputs/wireless/README.md) - Contributed by @jamesmaidment
 
 #### New Outputs
 
@@ -33,10 +35,14 @@
 - [#4864](https://github.com/influxdata/telegraf/pull/4864): Use DescribeStreamSummary in place of ListStreams in kinesis output.
 - [#4852](https://github.com/influxdata/telegraf/pull/4852): Add ability to specify bytes options as strings with units.
 - [#3903](https://github.com/influxdata/telegraf/pull/3903): Add support for TLS configuration in NSQ input.
+- [#4914](https://github.com/influxdata/telegraf/pull/4914): Collect additional stats in memcached input.
+- [#3847](https://github.com/influxdata/telegraf/pull/3847): Add wireless input plugin.
 
 ## v1.8.3 [unreleased]
 
 - [#4873](https://github.com/influxdata/telegraf/pull/4873): Add DN attributes as tags in x509_cert input to avoid series overwrite.
+- [#4921](https://github.com/influxdata/telegraf/issues/4921): Prevent connection leak by closing unused connections in amqp output.
+- [#4904](https://github.com/influxdata/telegraf/issues/4904): Use default partition key when tag does not exist in kinesis output.
 
 ## v1.8.2 [2018-10-17]
 
