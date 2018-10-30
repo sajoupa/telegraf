@@ -1,20 +1,45 @@
 name: telegraf
-version: 1.6.3
+version: 1.8.2
 summary: Telegraf agent
 description: |
   Telegraf is an agent written in Go for collecting, processing, aggregating, and writing metrics
 confinement: classic
 grade: stable
+
 apps:
   telegraf:
     command: 'bin/telegraf.wrapper'
     daemon: simple
+
 parts:
+  snap-wrappers:
+    plugin: dump
+    source: .
+    organize:
+      scripts/telegraf.snap_wrapper: bin/telegraf.wrapper
+    stage:
+      - etc
+      - bin
+  go:
+    after: [snap-wrappers]
+    source-tag: go1.10
+  dep:
+    after: [go]
+    plugin: nil
+    build: |
+      cd ..
+      export GOPATH=$(pwd)/go
+      mkdir -p $GOPATH
+      go get -d -u github.com/golang/dep
+      cd $(go env GOPATH)/src/github.com/golang/dep
+      DEP_LATEST=$(git describe --abbrev=0 --tags)
+      git checkout $DEP_LATEST
+      go build -ldflags="-X main.version=$DEP_LATEST" ./cmd/dep 
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      cp -p dep $SNAPCRAFT_PART_INSTALL/bin/
   telegraf:
-    after: [snap-wrappers, go]
+    after: [dep]
     build-attributes: [no-patchelf]
-    # We should use the go plugin but we can't until snapcraft supports gdm
-    # See https://bugs.launchpad.net/snapcraft/+bug/1748600
     plugin: nil
     build: |
       cd ..
@@ -22,18 +47,8 @@ parts:
       mkdir -p $GOPATH
       go get -d github.com/influxdata/telegraf
       cd $GOPATH/src/github.com/influxdata/telegraf
-      git checkout tags/1.6.3
+      git checkout tags/1.8.2
       make
-    install: |
-      mkdir $SNAPCRAFT_PART_INSTALL/bin
-      cp -p ../go/src/github.com/influxdata/telegraf/telegraf $SNAPCRAFT_PART_INSTALL/bin/telegraf
-  snap-wrappers:
-    plugin: dump
-    source: .
-    organize:
-      telegraf.snap_wrapper: bin/telegraf.wrapper
-    stage:
-      - bin/telegraf.wrapper
-      - etc/telegraf.conf
-  go:
-    source-tag: go1.8
+      mkdir -p /tmp/test-snap/$(pwd)
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      cp -p telegraf $SNAPCRAFT_PART_INSTALL/bin/
