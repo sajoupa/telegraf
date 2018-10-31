@@ -1,5 +1,5 @@
 name: telegraf
-version: 1.8.2
+adopt-info: telegraf
 summary: Telegraf agent
 description: |
   Telegraf is an agent written in Go for collecting, processing, aggregating, and writing metrics
@@ -12,6 +12,9 @@ apps:
     daemon: simple
 
 parts:
+
+  ## This wrapper will be called to start telegraf. It will import the default
+  ## config file if none exists, and start telegraf
   snap-wrappers:
     plugin: dump
     source: .
@@ -20,13 +23,14 @@ parts:
     stage:
       - etc
       - bin
+
   go:
-    after: [snap-wrappers]
     source-tag: go1.10
+
   dep:
     after: [go]
     plugin: nil
-    build: |
+    override-build: |
       cd ..
       export GOPATH=$(pwd)/go
       mkdir -p $GOPATH
@@ -37,17 +41,20 @@ parts:
       go build -ldflags="-X main.version=$DEP_LATEST" ./cmd/dep 
       mkdir -p $SNAPCRAFT_PART_INSTALL/bin
       cp -p dep $SNAPCRAFT_PART_INSTALL/bin/
+
   telegraf:
     after: [dep]
     build-attributes: [no-patchelf]
     plugin: nil
-    build: |
+    override-build: |
       cd ..
       export GOPATH=$(pwd)/go
       mkdir -p $GOPATH
       go get -d github.com/influxdata/telegraf
       cd $GOPATH/src/github.com/influxdata/telegraf
-      git checkout tags/1.8.2
+      version="$(git tag -l | sort -rn | grep -v '-rc' | head -n 1)"
+      snapcraftctl set-version "$version"
+      git checkout tags/$version
       make
       mkdir -p /tmp/test-snap/$(pwd)
       mkdir -p $SNAPCRAFT_PART_INSTALL/bin
