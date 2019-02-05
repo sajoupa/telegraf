@@ -25,7 +25,7 @@ parts:
       - bin
 
   go:
-    source-tag: go1.10
+    source-tag: go1.11
 
   dep:
     after: [go]
