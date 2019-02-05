@@ -56,6 +56,5 @@ parts:
       snapcraftctl set-version "$version"
       git checkout tags/$version
       make
-      mkdir -p /tmp/test-snap/$(pwd)
       mkdir -p $SNAPCRAFT_PART_INSTALL/bin
       cp -p telegraf $SNAPCRAFT_PART_INSTALL/bin/
