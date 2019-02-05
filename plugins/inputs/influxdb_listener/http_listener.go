@@ -229,9 +229,7 @@ func (h *HTTPListener) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		h.PingsRecv.Incr(1)
 		defer h.PingsServed.Incr(1)
 		// respond to ping requests
-		h.AuthenticateIfSet(func(res http.ResponseWriter, req *http.Request) {
-			res.WriteHeader(http.StatusNoContent)
-		}, res, req)
+		res.WriteHeader(http.StatusNoContent)
 	default:
 		defer h.NotFoundsServed.Incr(1)
 		// Don't know how to respond to calls to other endpoints
@@ -254,12 +252,12 @@ func (h *HTTPListener) serveWrite(res http.ResponseWriter, req *http.Request) {
 	if req.Header.Get("Content-Encoding") == "gzip" {
 		var err error
 		body, err = gzip.NewReader(req.Body)
-		defer body.Close()
 		if err != nil {
 			log.Println("D! " + err.Error())
 			badRequest(res, err.Error())
 			return
 		}
+		defer body.Close()
 	}
 	body = http.MaxBytesReader(res, body, h.MaxBodySize.Size)
 

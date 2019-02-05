@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -17,7 +18,9 @@ import (
 	"time"
 	"unicode"
 
+	"fmt"
 	"github.com/alecthomas/units"
+	"runtime"
 )
 
 const alphanum string = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -55,6 +58,11 @@ func SetVersion(v string) error {
 // Version returns the telegraf agent version
 func Version() string {
 	return version
+}
+
+// ProductToken returns a tag for Telegraf that can be used in user agents.
+func ProductToken() string {
+	return fmt.Sprintf("Telegraf/%s Go/%s", Version(), runtime.Version())
 }
 
 // UnmarshalTOML parses the duration from the TOML config file
@@ -244,6 +252,51 @@ func RandomSleep(max time.Duration, shutdown chan struct{}) {
 		t.Stop()
 		return
 	}
+}
+
+// RandomDuration returns a random duration between 0 and max.
+func RandomDuration(max time.Duration) time.Duration {
+	if max == 0 {
+		return 0
+	}
+
+	var sleepns int64
+	maxSleep := big.NewInt(max.Nanoseconds())
+	if j, err := rand.Int(rand.Reader, maxSleep); err == nil {
+		sleepns = j.Int64()
+	}
+
+	return time.Duration(sleepns)
+}
+
+// SleepContext sleeps until the context is closed or the duration is reached.
+func SleepContext(ctx context.Context, duration time.Duration) error {
+	if duration == 0 {
+		return nil
+	}
+
+	t := time.NewTimer(duration)
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		t.Stop()
+		return ctx.Err()
+	}
+}
+
+// AlignDuration returns the duration until next aligned interval.
+func AlignDuration(tm time.Time, interval time.Duration) time.Duration {
+	return AlignTime(tm, interval).Sub(tm)
+}
+
+// AlignTime returns the time of the next aligned interval.
+func AlignTime(tm time.Time, interval time.Duration) time.Time {
+	truncated := tm.Truncate(interval)
+	if truncated == tm {
+		return tm
+	}
+	return truncated.Add(interval)
 }
 
 // Exit status takes the error from exec.Command
