@@ -49,6 +49,8 @@ PACKAGE_URL = "https://github.com/influxdata/telegraf"
 MAINTAINER = "support@influxdb.com"
 VENDOR = "InfluxData"
 DESCRIPTION = "Plugin-driven server agent for reporting metrics into InfluxDB."
+SNAP_CONFINEMENT = "classic"
+SNAP_GRADE = "stable"
 
 # SCRIPT START
 prereqs = [ 'git', 'go' ]
@@ -78,6 +80,11 @@ fpm_common_args = "-f -s dir --log error \
     POSTREMOVE_SCRIPT,
     PREREMOVE_SCRIPT,
     DESCRIPTION)
+
+fpm_snapcraft_args = "--snap-confinement {}\
+ --snap-grade {}".format(
+    SNAP_CONFINEMENT,
+    SNAP_GRADE)
 
 targets = {
     'telegraf' : './cmd/telegraf',
@@ -648,6 +655,8 @@ def package(build_output, pkg_name, version, nightly=False, iteration=1, static=
                             current_location)
                         if package_type == "rpm":
                             fpm_command += "--depends coreutils --depends shadow-utils --rpm-posttrans {}".format(POSTINST_SCRIPT)
+                        if package_type == "snap":
+                            fpm_command += fpm_snapcraft_args
                         out = run(fpm_command, shell=True)
                         matches = re.search(':path=>"(.*)"', out)
                         outfile = None
