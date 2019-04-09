@@ -1,4 +1,4 @@
-name: telegraf
+name: telegraf-sajoupa
 adopt-info: telegraf
 summary: Telegraf agent
 description: |
@@ -25,7 +25,7 @@ parts:
       - bin
 
   go:
-    source-tag: go1.11
+    source-tag: go1.12
 
   dep:
     after: [go]
@@ -52,7 +52,7 @@ parts:
       mkdir -p $GOPATH
       go get -d github.com/influxdata/telegraf
       cd $GOPATH/src/github.com/influxdata/telegraf
-      version="$(git tag -l | sort -rn | grep -v '\-rc' | head -n 1)"
+      version="$(git tag -l | egrep -v '^v|\-rc' | sort -Vr | head -n 1)"
       snapcraftctl set-version "$version"
       git checkout tags/$version
       make
