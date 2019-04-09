@@ -139,6 +139,7 @@ For documentation on the latest development code see the [documentation index][d
 * [aws cloudwatch](./plugins/inputs/cloudwatch)
 * [bcache](./plugins/inputs/bcache)
 * [beanstalkd](./plugins/inputs/beanstalkd)
+* [bind](./plugins/inputs/bind)
 * [bond](./plugins/inputs/bond)
 * [burrow](./plugins/inputs/burrow)
 * [cassandra](./plugins/inputs/cassandra) (deprecated, use [jolokia2](./plugins/inputs/jolokia2))
@@ -146,6 +147,7 @@ For documentation on the latest development code see the [documentation index][d
 * [cgroup](./plugins/inputs/cgroup)
 * [chrony](./plugins/inputs/chrony)
 * [cloud_pubsub](./plugins/inputs/cloud_pubsub) Google Cloud Pub/Sub
+* [cloud_pubsub_push](./plugins/inputs/cloud_pubsub_push) Google Cloud Pub/Sub push endpoint
 * [conntrack](./plugins/inputs/conntrack)
 * [consul](./plugins/inputs/consul)
 * [couchbase](./plugins/inputs/couchbase)
@@ -167,6 +169,7 @@ For documentation on the latest development code see the [documentation index][d
 * [filestat](./plugins/inputs/filestat)
 * [filecount](./plugins/inputs/filecount)
 * [fluentd](./plugins/inputs/fluentd)
+* [github](./plugins/inputs/github)
 * [graylog](./plugins/inputs/graylog)
 * [haproxy](./plugins/inputs/haproxy)
 * [hddtemp](./plugins/inputs/hddtemp)
@@ -190,6 +193,7 @@ For documentation on the latest development code see the [documentation index][d
 * [jti_openconfig_telemetry](./plugins/inputs/jti_openconfig_telemetry)
 * [kafka_consumer](./plugins/inputs/kafka_consumer)
 * [kapacitor](./plugins/inputs/kapacitor)
+* [kinesis](./plugins/inputs/kinesis_consumer)
 * [kernel](./plugins/inputs/kernel)
 * [kernel_vmstat](./plugins/inputs/kernel_vmstat)
 * [kibana](./plugins/inputs/kibana)
@@ -253,6 +257,7 @@ For documentation on the latest development code see the [documentation index][d
 * [socket_listener](./plugins/inputs/socket_listener)
 * [solr](./plugins/inputs/solr)
 * [sql server](./plugins/inputs/sqlserver) (microsoft)
+* [stackdriver](./plugins/inputs/stackdriver)
 * [statsd](./plugins/inputs/statsd)
 * [swap](./plugins/inputs/swap)
 * [syslog](./plugins/inputs/syslog)
@@ -279,6 +284,7 @@ For documentation on the latest development code see the [documentation index][d
 * [win_perf_counters](./plugins/inputs/win_perf_counters) (windows performance counters)
 * [win_services](./plugins/inputs/win_services)
 * [wireless](./plugins/inputs/wireless)
+* [x509_cert](./plugins/inputs/x509_cert)
 * [zfs](./plugins/inputs/zfs)
 * [zipkin](./plugins/inputs/zipkin)
 * [zookeeper](./plugins/inputs/zookeeper)
@@ -305,6 +311,7 @@ For documentation on the latest development code see the [documentation index][d
 - [ServiceNow](/plugins/serializers/nowmetric)
 - [SplunkMetric](/plugins/serializers/splunkmetric)
 - [Carbon2](/plugins/serializers/carbon2)
+- [Wavefront](/plugins/serializers/wavefront)
 
 ## Processor Plugins
 

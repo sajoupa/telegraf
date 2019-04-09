@@ -118,17 +118,6 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:a74730e052a45a3fab1d310fdef2ec17ae3d6af16228421e238320846f2aaec8"
-  name = "github.com/alecthomas/template"
-  packages = [
-    ".",
-    "parse",
-  ]
-  pruneopts = ""
-  revision = "a0175ee3bccc567396460bf5acd36800cb10c49c"
-
-[[projects]]
-  branch = "master"
   digest = "1:8483994d21404c8a1d489f6be756e25bfccd3b45d65821f25695577791a08e68"
   name = "github.com/alecthomas/units"
   packages = ["."]
@@ -187,7 +176,11 @@
     "private/protocol/rest",
     "private/protocol/xml/xmlutil",
     "service/cloudwatch",
+    "service/dynamodb",
+    "service/dynamodb/dynamodbattribute",
+    "service/dynamodb/dynamodbiface",
     "service/kinesis",
+    "service/kinesis/kinesisiface",
     "service/sts",
   ]
   pruneopts = ""
@@ -209,6 +202,14 @@
   pruneopts = ""
   revision = "cf455bc755fe41ac9bb2861e7a961833d9c2ecc3"
   version = "v2.1.13"
+
+[[projects]]
+  digest = "1:e5691038f8e87e7da05280095d968e50c17d624e25cca095d4e4cd947a805563"
+  name = "github.com/caio/go-tdigest"
+  packages = ["."]
+  pruneopts = ""
+  revision = "f3c8d94f65d3096ac96eda54ffcd10c0fe1477f1"
+  version = "v2.3.0"
 
 [[projects]]
   digest = "1:f619cb9b07aebe5416262cdd8b86082e8d5bdc5264cb3b615ff858df0b645f97"
@@ -403,6 +404,14 @@
   version = "v1.2.0"
 
 [[projects]]
+  branch = "master"
+  digest = "1:ec95c1c49fbec27ab5383b9c47fae5c2fe1d97ac5b41d36d78e17588a44e9f3f"
+  name = "github.com/ghodss/yaml"
+  packages = ["."]
+  pruneopts = ""
+  revision = "25d852aebe32c875e9c044af3eef9c7dc6bc777f"
+
+[[projects]]
   digest = "1:858b7fe7b0f4bc7ef9953926828f2816ea52d01a88d72d1c45bc8c108f23c356"
   name = "github.com/go-ini/ini"
   packages = ["."]
@@ -519,6 +528,22 @@
   version = "v0.2.0"
 
 [[projects]]
+  digest = "1:e38ad2825940d58bd8425be40bcd4211099d0c1988c158c35828197413b3cf85"
+  name = "github.com/google/go-github"
+  packages = ["github"]
+  pruneopts = ""
+  revision = "7462feb2032c2da9e3b85e9b04e6853a6e9e14ca"
+  version = "v24.0.1"
+
+[[projects]]
+  digest = "1:cea4aa2038169ee558bf507d5ea02c94ca85bcca28a4c7bb99fd59b31e43a686"
+  name = "github.com/google/go-querystring"
+  packages = ["query"]
+  pruneopts = ""
+  revision = "44c6ddd0a2342c386950e880b658017258da92fc"
+  version = "v1.0.0"
+
+[[projects]]
   digest = "1:c1d7e883c50a26ea34019320d8ae40fad86c9e5d56e63a1ba2cb618cef43e986"
   name = "github.com/google/uuid"
   packages = ["."]
@@ -557,6 +582,17 @@
   packages = ["."]
   pruneopts = ""
   revision = "e80d13ce29ede4452c43dea11e79b9bc8a15b478"
+
+[[projects]]
+  branch = "master"
+  digest = "1:c191ec4c50122cdfeedba867d25bbe2ed63ed6dd2130729220c6c0d654361ea4"
+  name = "github.com/harlow/kinesis-consumer"
+  packages = [
+    ".",
+    "checkpoint/ddb",
+  ]
+  pruneopts = ""
+  revision = "2f58b136fee036f5de256b81a8461cc724fdf9df"
 
 [[projects]]
   digest = "1:e7224669901bab4094e6d6697c136557b7177db6ceb01b7fc8b20d08f4b5aacd"
@@ -929,7 +965,6 @@
   packages = [
     "expfmt",
     "internal/bitbucket.org/ww/goautoneg",
-    "log",
     "model",
   ]
   pruneopts = ""
@@ -973,7 +1008,7 @@
   version = "v1.2.0"
 
 [[projects]]
-  digest = "1:02135a4151567d48ebff6cf36f73b5d8dee566855df84ffd96111d5225848bb7"
+  digest = "1:d77a85cf43b70ae61fa2543d402d782b40dca0f5f41413839b5f916782b0fab9"
   name = "github.com/shirou/gopsutil"
   packages = [
     "cpu",
@@ -986,8 +1021,8 @@
     "process",
   ]
   pruneopts = ""
-  revision = "ccc1c1016bc5d10e803189ee43417c50cdde7f1b"
-  version = "v2.18.12"
+  revision = "6c6abd6d1666d6b27f1c261e0f850441ba22aa3a"
+  version = "v2.19.02"
 
 [[projects]]
   branch = "master"
@@ -1111,15 +1146,16 @@
   version = "v0.19.0"
 
 [[projects]]
-  digest = "1:c3bdfb7e9b2a66bafbd47517a1a4e489706f75af37ad5bfb57621bf41c16b556"
+  digest = "1:4cb7eb45ed9a5129bc77c726328c130abcbaae566c1fe4d82693fae86c8c621d"
   name = "github.com/wavefronthq/wavefront-sdk-go"
   packages = [
+    "histogram",
     "internal",
     "senders",
   ]
   pruneopts = ""
-  revision = "7821ac6d8ae05fe70c6d090ebda380c64f1416e4"
-  version = "v0.9.1"
+  revision = "fa87530cd02a8ad08bd179e1c39fb319a0cc0dae"
+  version = "v0.9.2"
 
 [[projects]]
   branch = "master"
@@ -1190,6 +1226,7 @@
   ]
   pruneopts = ""
   revision = "a2144134853fc9a27a7b1e3eb4f19f1a76df13c9"
+  source = "https://github.com/golang/crypto.git"
 
 [[projects]]
   branch = "master"
@@ -1218,6 +1255,7 @@
   ]
   pruneopts = ""
   revision = "a680a1efc54dd51c040b3b5ce4939ea3cf2ea0d1"
+  source = "https://github.com/golang/net.git"
 
 [[projects]]
   branch = "master"
@@ -1233,6 +1271,7 @@
   ]
   pruneopts = ""
   revision = "d2e6202438beef2727060aa7cabdd924d92ebfd9"
+  source = "https://github.com/golang/oauth2.git"
 
 [[projects]]
   branch = "master"
@@ -1244,6 +1283,7 @@
   ]
   pruneopts = ""
   revision = "42b317875d0fa942474b76e1b46a6060d720ae6e"
+  source = "https://github.com/golang/sync.git"
 
 [[projects]]
   branch = "master"
@@ -1260,6 +1300,7 @@
   ]
   pruneopts = ""
   revision = "7c4c994c65f702f41ed7d6620a2cb34107576a77"
+  source = "https://github.com/golang/sys.git"
 
 [[projects]]
   digest = "1:5acd3512b047305d49e8763eef7ba423901e85d5dd2fd1e71778a0ea8de10bd4"
@@ -1294,6 +1335,7 @@
   ]
   pruneopts = ""
   revision = "f21a4dfb5e38f5895301dc265a8def02365cc3d0"
+  source = "https://github.com/golang/text.git"
   version = "v0.3.0"
 
 [[projects]]
@@ -1388,14 +1430,6 @@
   pruneopts = ""
   revision = "168a6198bcb0ef175f7dacec0b8691fc141dc9b8"
   version = "v1.13.0"
-
-[[projects]]
-  digest = "1:15d017551627c8bb091bde628215b2861bed128855343fdd570c62d08871f6e1"
-  name = "gopkg.in/alecthomas/kingpin.v2"
-  packages = ["."]
-  pruneopts = ""
-  revision = "947dcec5ba9c011838740e680966fd7087a71d0d"
-  version = "v2.2.6"
 
 [[projects]]
   digest = "1:3cad99e0d1f94b8c162787c12e59d0a0b9df1ef75590eb145cdd625479091efe"
@@ -1516,6 +1550,7 @@
     "github.com/aws/aws-sdk-go/aws/credentials/stscreds",
     "github.com/aws/aws-sdk-go/aws/session",
     "github.com/aws/aws-sdk-go/service/cloudwatch",
+    "github.com/aws/aws-sdk-go/service/dynamodb",
     "github.com/aws/aws-sdk-go/service/kinesis",
     "github.com/bsm/sarama-cluster",
     "github.com/couchbase/go-couchbase",
@@ -1536,15 +1571,20 @@
     "github.com/ericchiang/k8s/apis/meta/v1",
     "github.com/ericchiang/k8s/apis/resource",
     "github.com/ericchiang/k8s/util/intstr",
+    "github.com/ghodss/yaml",
     "github.com/go-logfmt/logfmt",
     "github.com/go-redis/redis",
     "github.com/go-sql-driver/mysql",
     "github.com/gobwas/glob",
     "github.com/golang/protobuf/proto",
+    "github.com/golang/protobuf/ptypes/duration",
     "github.com/golang/protobuf/ptypes/empty",
     "github.com/golang/protobuf/ptypes/timestamp",
     "github.com/google/go-cmp/cmp",
+    "github.com/google/go-github/github",
     "github.com/gorilla/mux",
+    "github.com/harlow/kinesis-consumer",
+    "github.com/harlow/kinesis-consumer/checkpoint/ddb",
     "github.com/hashicorp/consul/api",
     "github.com/influxdata/go-syslog",
     "github.com/influxdata/go-syslog/nontransparent",
@@ -1574,7 +1614,6 @@
     "github.com/prometheus/client_golang/prometheus/promhttp",
     "github.com/prometheus/client_model/go",
     "github.com/prometheus/common/expfmt",
-    "github.com/prometheus/common/log",
     "github.com/satori/go.uuid",
     "github.com/shirou/gopsutil/cpu",
     "github.com/shirou/gopsutil/disk",
@@ -1593,6 +1632,7 @@
     "github.com/vmware/govmomi",
     "github.com/vmware/govmomi/object",
     "github.com/vmware/govmomi/performance",
+    "github.com/vmware/govmomi/property",
     "github.com/vmware/govmomi/session",
     "github.com/vmware/govmomi/simulator",
     "github.com/vmware/govmomi/view",
@@ -1612,8 +1652,10 @@
     "golang.org/x/sys/windows",
     "golang.org/x/sys/windows/svc",
     "golang.org/x/sys/windows/svc/mgr",
+    "google.golang.org/api/iterator",
     "google.golang.org/api/option",
     "google.golang.org/api/support/bundler",
+    "google.golang.org/genproto/googleapis/api/distribution",
     "google.golang.org/genproto/googleapis/api/metric",
     "google.golang.org/genproto/googleapis/api/monitoredres",
     "google.golang.org/genproto/googleapis/monitoring/v3",
