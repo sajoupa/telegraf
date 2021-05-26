@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,6 +19,8 @@ import (
 	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
+
+	"github.com/influxdata/telegraf"
 )
 
 // The highest number of metrics we can query for, no matter what settings
@@ -30,13 +31,13 @@ const absoluteMaxMetrics = 10000
 // a single Client is reused across all functions and goroutines, but the client
 // is periodically recycled to avoid authentication expiration issues.
 type ClientFactory struct {
-	client *Client
-	mux    sync.Mutex
-	url    *url.URL
-	parent *VSphere
+	client     *Client
+	mux        sync.Mutex
+	vSphereURL *url.URL
+	parent     *VSphere
 }
 
-// Client represents a connection to vSphere and is backed by a govmoni connection
+// Client represents a connection to vSphere and is backed by a govmomi connection
 type Client struct {
 	Client    *govmomi.Client
 	Views     *view.Manager
@@ -45,14 +46,15 @@ type Client struct {
 	Valid     bool
 	Timeout   time.Duration
 	closeGate sync.Once
+	log       telegraf.Logger
 }
 
 // NewClientFactory creates a new ClientFactory and prepares it for use.
-func NewClientFactory(ctx context.Context, url *url.URL, parent *VSphere) *ClientFactory {
+func NewClientFactory(vSphereURL *url.URL, parent *VSphere) *ClientFactory {
 	return &ClientFactory{
-		client: nil,
-		parent: parent,
-		url:    url,
+		client:     nil,
+		parent:     parent,
+		vSphereURL: vSphereURL,
 	}
 }
 
@@ -61,33 +63,44 @@ func NewClientFactory(ctx context.Context, url *url.URL, parent *VSphere) *Clien
 func (cf *ClientFactory) GetClient(ctx context.Context) (*Client, error) {
 	cf.mux.Lock()
 	defer cf.mux.Unlock()
-	if cf.client == nil {
-		var err error
-		if cf.client, err = NewClient(ctx, cf.url, cf.parent); err != nil {
-			return nil, err
+	retrying := false
+	for {
+		if cf.client == nil {
+			var err error
+			if cf.client, err = NewClient(ctx, cf.vSphereURL, cf.parent); err != nil {
+				return nil, err
+			}
 		}
-	}
 
-	// Execute a dummy call against the server to make sure the client is
-	// still functional. If not, try to log back in. If that doesn't work,
-	// we give up.
-	ctx1, cancel1 := context.WithTimeout(ctx, cf.parent.Timeout.Duration)
-	defer cancel1()
-	if _, err := methods.GetCurrentTime(ctx1, cf.client.Client); err != nil {
-		log.Printf("I! [inputs.vsphere]: Client session seems to have time out. Reauthenticating!")
-		ctx2, cancel2 := context.WithTimeout(ctx, cf.parent.Timeout.Duration)
-		defer cancel2()
-		if cf.client.Client.SessionManager.Login(ctx2, url.UserPassword(cf.parent.Username, cf.parent.Password)) != nil {
-			return nil, fmt.Errorf("Renewing authentication failed: %v", err)
+		// Execute a dummy call against the server to make sure the client is
+		// still functional. If not, try to log back in. If that doesn't work,
+		// we give up.
+		ctx1, cancel1 := context.WithTimeout(ctx, time.Duration(cf.parent.Timeout))
+		defer cancel1()
+		if _, err := methods.GetCurrentTime(ctx1, cf.client.Client); err != nil {
+			cf.parent.Log.Info("Client session seems to have time out. Reauthenticating!")
+			ctx2, cancel2 := context.WithTimeout(ctx, time.Duration(cf.parent.Timeout))
+			defer cancel2()
+			if err := cf.client.Client.SessionManager.Login(ctx2, url.UserPassword(cf.parent.Username, cf.parent.Password)); err != nil {
+				if !retrying {
+					// The client went stale. Probably because someone rebooted vCenter. Clear it to
+					// force us to create a fresh one. We only get one chance at this. If we fail a second time
+					// we will simply skip this collection round and hope things have stabilized for the next one.
+					retrying = true
+					cf.client = nil
+					continue
+				}
+				return nil, fmt.Errorf("renewing authentication failed: %s", err.Error())
+			}
 		}
-	}
 
-	return cf.client, nil
+		return cf.client, nil
+	}
 }
 
 // NewClient creates a new vSphere client based on the url and setting passed as parameters.
-func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
-	sw := NewStopwatch("connect", u.Host)
+func NewClient(ctx context.Context, vSphereURL *url.URL, vs *VSphere) (*Client, error) {
+	sw := NewStopwatch("connect", vSphereURL.Host)
 	defer sw.Stop()
 
 	tlsCfg, err := vs.ClientConfig.TLSConfig()
@@ -99,14 +112,14 @@ func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
 		tlsCfg = &tls.Config{}
 	}
 	if vs.Username != "" {
-		u.User = url.UserPassword(vs.Username, vs.Password)
+		vSphereURL.User = url.UserPassword(vs.Username, vs.Password)
 	}
 
-	log.Printf("D! [inputs.vsphere]: Creating client: %s", u.Host)
-	soapClient := soap.NewClient(u, tlsCfg.InsecureSkipVerify)
+	vs.Log.Debugf("Creating client: %s", vSphereURL.Host)
+	soapClient := soap.NewClient(vSphereURL, tlsCfg.InsecureSkipVerify)
 
 	// Add certificate if we have it. Use it to log us in.
-	if tlsCfg != nil && len(tlsCfg.Certificates) > 0 {
+	if len(tlsCfg.Certificates) > 0 {
 		soapClient.SetCertificate(tlsCfg.Certificates[0])
 	}
 
@@ -118,7 +131,7 @@ func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
 		}
 	}
 
-	ctx1, cancel1 := context.WithTimeout(ctx, vs.Timeout.Duration)
+	ctx1, cancel1 := context.WithTimeout(ctx, time.Duration(vs.Timeout))
 	defer cancel1()
 	vimClient, err := vim25.NewClient(ctx1, soapClient)
 	if err != nil {
@@ -128,7 +141,7 @@ func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
 
 	// If TSLKey is specified, try to log in as an extension using a cert.
 	if vs.TLSKey != "" {
-		ctx2, cancel2 := context.WithTimeout(ctx, vs.Timeout.Duration)
+		ctx2, cancel2 := context.WithTimeout(ctx, time.Duration(vs.Timeout))
 		defer cancel2()
 		if err := sm.LoginExtensionByCertificate(ctx2, vs.TLSKey); err != nil {
 			return nil, err
@@ -142,13 +155,13 @@ func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
 	}
 
 	// Only login if the URL contains user information.
-	if u.User != nil {
-		if err := c.Login(ctx, u.User); err != nil {
+	if vSphereURL.User != nil {
+		if err := c.Login(ctx, vSphereURL.User); err != nil {
 			return nil, err
 		}
 	}
 
-	c.Timeout = vs.Timeout.Duration
+	c.Timeout = time.Duration(vs.Timeout)
 	m := view.NewManager(c.Client)
 
 	v, err := m.CreateContainerView(ctx, c.ServiceContent.RootFolder, []string{}, true)
@@ -159,23 +172,24 @@ func NewClient(ctx context.Context, u *url.URL, vs *VSphere) (*Client, error) {
 	p := performance.NewManager(c.Client)
 
 	client := &Client{
+		log:     vs.Log,
 		Client:  c,
 		Views:   m,
 		Root:    v,
 		Perf:    p,
 		Valid:   true,
-		Timeout: vs.Timeout.Duration,
+		Timeout: time.Duration(vs.Timeout),
 	}
 	// Adjust max query size if needed
-	ctx3, cancel3 := context.WithTimeout(ctx, vs.Timeout.Duration)
+	ctx3, cancel3 := context.WithTimeout(ctx, time.Duration(vs.Timeout))
 	defer cancel3()
 	n, err := client.GetMaxQueryMetrics(ctx3)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("D! [inputs.vsphere] vCenter says max_query_metrics should be %d", n)
+	vs.Log.Debugf("vCenter says max_query_metrics should be %d", n)
 	if n < vs.MaxQueryMetrics {
-		log.Printf("W! [inputs.vsphere] Configured max_query_metrics is %d, but server limits it to %d. Reducing.", vs.MaxQueryMetrics, n)
+		vs.Log.Warnf("Configured max_query_metrics is %d, but server limits it to %d. Reducing.", vs.MaxQueryMetrics, n)
 		vs.MaxQueryMetrics = n
 	}
 	return client, nil
@@ -191,7 +205,6 @@ func (cf *ClientFactory) Close() {
 }
 
 func (c *Client) close() {
-
 	// Use a Once to prevent us from panics stemming from trying
 	// to close it multiple times.
 	c.closeGate.Do(func() {
@@ -199,7 +212,7 @@ func (c *Client) close() {
 		defer cancel()
 		if c.Client != nil {
 			if err := c.Client.Logout(ctx); err != nil {
-				log.Printf("E! [inputs.vsphere]: Error during logout: %s", err)
+				c.log.Errorf("Logout: %s", err.Error())
 			}
 		}
 	})
@@ -228,7 +241,7 @@ func (c *Client) GetMaxQueryMetrics(ctx context.Context) (int, error) {
 			if s, ok := res[0].GetOptionValue().Value.(string); ok {
 				v, err := strconv.Atoi(s)
 				if err == nil {
-					log.Printf("D! [inputs.vsphere] vCenter maxQueryMetrics is defined: %d", v)
+					c.log.Debugf("vCenter maxQueryMetrics is defined: %d", v)
 					if v == -1 {
 						// Whatever the server says, we never ask for more metrics than this.
 						return absoluteMaxMetrics, nil
@@ -239,17 +252,17 @@ func (c *Client) GetMaxQueryMetrics(ctx context.Context) (int, error) {
 			// Fall through version-based inference if value isn't usable
 		}
 	} else {
-		log.Println("D! [inputs.vsphere] Option query for maxQueryMetrics failed. Using default")
+		c.log.Debug("Option query for maxQueryMetrics failed. Using default")
 	}
 
 	// No usable maxQueryMetrics setting. Infer based on version
 	ver := c.Client.Client.ServiceContent.About.Version
 	parts := strings.Split(ver, ".")
 	if len(parts) < 2 {
-		log.Printf("W! [inputs.vsphere] vCenter returned an invalid version string: %s. Using default query size=64", ver)
+		c.log.Warnf("vCenter returned an invalid version string: %s. Using default query size=64", ver)
 		return 64, nil
 	}
-	log.Printf("D! [inputs.vsphere] vCenter version is: %s", ver)
+	c.log.Debugf("vCenter version is: %s", ver)
 	major, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return 0, err
@@ -293,4 +306,19 @@ func (c *Client) ListResources(ctx context.Context, root *view.ContainerView, ki
 	ctx1, cancel1 := context.WithTimeout(ctx, c.Timeout)
 	defer cancel1()
 	return root.Retrieve(ctx1, kind, ps, dst)
+}
+
+func (c *Client) GetCustomFields(ctx context.Context) (map[int32]string, error) {
+	ctx1, cancel1 := context.WithTimeout(ctx, c.Timeout)
+	defer cancel1()
+	cfm := object.NewCustomFieldsManager(c.Client.Client)
+	fields, err := cfm.Field(ctx1)
+	if err != nil {
+		return nil, err
+	}
+	r := make(map[int32]string)
+	for _, f := range fields {
+		r[f.Key] = f.Name
+	}
+	return r, nil
 }

@@ -8,33 +8,36 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
+	"github.com/influxdata/telegraf/config"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
-type NginxPlusApi struct {
-	Urls []string
-
-	ApiVersion int64
+type NginxPlusAPI struct {
+	Urls            []string        `toml:"urls"`
+	APIVersion      int64           `toml:"api_version"`
+	ResponseTimeout config.Duration `toml:"response_timeout"`
+	tls.ClientConfig
 
 	client *http.Client
-
-	ResponseTimeout internal.Duration
 }
 
 const (
 	// Default settings
-	defaultApiVersion = 3
+	defaultAPIVersion = 3
 
 	// Paths
 	processesPath   = "processes"
 	connectionsPath = "connections"
 	sslPath         = "ssl"
 
-	httpRequestsPath    = "http/requests"
-	httpServerZonesPath = "http/server_zones"
-	httpUpstreamsPath   = "http/upstreams"
-	httpCachesPath      = "http/caches"
+	httpRequestsPath      = "http/requests"
+	httpServerZonesPath   = "http/server_zones"
+	httpLocationZonesPath = "http/location_zones"
+	httpUpstreamsPath     = "http/upstreams"
+	httpCachesPath        = "http/caches"
+
+	resolverZonesPath = "resolvers"
 
 	streamServerZonesPath = "stream/server_zones"
 	streamUpstreamsPath   = "stream/upstreams"
@@ -49,28 +52,35 @@ var sampleConfig = `
 
   # HTTP response timeout (default: 5s)
   response_timeout = "5s"
+
+  ## Optional TLS Config
+  # tls_ca = "/etc/telegraf/ca.pem"
+  # tls_cert = "/etc/telegraf/cert.pem"
+  # tls_key = "/etc/telegraf/key.pem"
+  ## Use TLS but skip chain & host verification
+  # insecure_skip_verify = false
 `
 
-func (n *NginxPlusApi) SampleConfig() string {
+func (n *NginxPlusAPI) SampleConfig() string {
 	return sampleConfig
 }
 
-func (n *NginxPlusApi) Description() string {
+func (n *NginxPlusAPI) Description() string {
 	return "Read Nginx Plus Api documentation"
 }
 
-func (n *NginxPlusApi) Gather(acc telegraf.Accumulator) error {
+func (n *NginxPlusAPI) Gather(acc telegraf.Accumulator) error {
 	var wg sync.WaitGroup
 
 	// Create an HTTP client that is re-used for each
 	// collection interval
 
-	if n.ApiVersion == 0 {
-		n.ApiVersion = defaultApiVersion
+	if n.APIVersion == 0 {
+		n.APIVersion = defaultAPIVersion
 	}
 
 	if n.client == nil {
-		client, err := n.createHttpClient()
+		client, err := n.createHTTPClient()
 		if err != nil {
 			return err
 		}
@@ -95,14 +105,21 @@ func (n *NginxPlusApi) Gather(acc telegraf.Accumulator) error {
 	return nil
 }
 
-func (n *NginxPlusApi) createHttpClient() (*http.Client, error) {
-	if n.ResponseTimeout.Duration < time.Second {
-		n.ResponseTimeout.Duration = time.Second * 5
+func (n *NginxPlusAPI) createHTTPClient() (*http.Client, error) {
+	if n.ResponseTimeout < config.Duration(time.Second) {
+		n.ResponseTimeout = config.Duration(time.Second * 5)
+	}
+
+	tlsConfig, err := n.ClientConfig.TLSConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	client := &http.Client{
-		Transport: &http.Transport{},
-		Timeout:   n.ResponseTimeout.Duration,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+		Timeout: time.Duration(n.ResponseTimeout),
 	}
 
 	return client, nil
@@ -110,6 +127,6 @@ func (n *NginxPlusApi) createHttpClient() (*http.Client, error) {
 
 func init() {
 	inputs.Add("nginx_plus_api", func() telegraf.Input {
-		return &NginxPlusApi{}
+		return &NginxPlusAPI{}
 	})
 }

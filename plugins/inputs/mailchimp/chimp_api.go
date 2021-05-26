@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -14,11 +15,11 @@ import (
 )
 
 const (
-	reports_endpoint          string = "/3.0/reports"
-	reports_endpoint_campaign string = "/3.0/reports/%s"
+	reportsEndpoint         string = "/3.0/reports"
+	reportsEndpointCampaign string = "/3.0/reports/%s"
 )
 
-var mailchimp_datacenter = regexp.MustCompile("[a-z]+[0-9]+$")
+var mailchimpDatacenter = regexp.MustCompile("[a-z]+[0-9]+$")
 
 type ChimpAPI struct {
 	Transport http.RoundTripper
@@ -56,7 +57,7 @@ func (p *ReportsParams) String() string {
 func NewChimpAPI(apiKey string) *ChimpAPI {
 	u := &url.URL{}
 	u.Scheme = "https"
-	u.Host = fmt.Sprintf("%s.api.mailchimp.com", mailchimp_datacenter.FindString(apiKey))
+	u.Host = fmt.Sprintf("%s.api.mailchimp.com", mailchimpDatacenter.FindString(apiKey))
 	u.User = url.UserPassword("", apiKey)
 	return &ChimpAPI{url: u}
 }
@@ -75,7 +76,9 @@ func (e APIError) Error() string {
 
 func chimpErrorCheck(body []byte) error {
 	var e APIError
-	json.Unmarshal(body, &e)
+	if err := json.Unmarshal(body, &e); err != nil {
+		return err
+	}
 	if e.Title != "" || e.Status != 0 {
 		return e
 	}
@@ -85,7 +88,7 @@ func chimpErrorCheck(body []byte) error {
 func (a *ChimpAPI) GetReports(params ReportsParams) (ReportsResponse, error) {
 	a.Lock()
 	defer a.Unlock()
-	a.url.Path = reports_endpoint
+	a.url.Path = reportsEndpoint
 
 	var response ReportsResponse
 	rawjson, err := runChimp(a, params)
@@ -104,7 +107,7 @@ func (a *ChimpAPI) GetReports(params ReportsParams) (ReportsResponse, error) {
 func (a *ChimpAPI) GetReport(campaignID string) (Report, error) {
 	a.Lock()
 	defer a.Unlock()
-	a.url.Path = fmt.Sprintf(reports_endpoint_campaign, campaignID)
+	a.url.Path = fmt.Sprintf(reportsEndpointCampaign, campaignID)
 
 	var response Report
 	rawjson, err := runChimp(a, ReportsParams{})
@@ -123,7 +126,7 @@ func (a *ChimpAPI) GetReport(campaignID string) (Report, error) {
 func runChimp(api *ChimpAPI, params ReportsParams) ([]byte, error) {
 	client := &http.Client{
 		Transport: api.Transport,
-		Timeout:   time.Duration(4 * time.Second),
+		Timeout:   4 * time.Second,
 	}
 
 	var b bytes.Buffer
@@ -134,7 +137,7 @@ func runChimp(api *ChimpAPI, params ReportsParams) ([]byte, error) {
 	req.URL.RawQuery = params.String()
 	req.Header.Set("User-Agent", "Telegraf-MailChimp-Plugin")
 	if api.Debug {
-		log.Printf("D! Request URL: %s", req.URL.String())
+		log.Printf("D! [inputs.mailchimp] request URL: %s", req.URL.String())
 	}
 
 	resp, err := client.Do(req)
@@ -143,12 +146,18 @@ func runChimp(api *ChimpAPI, params ReportsParams) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		// ignore the err here; LimitReader returns io.EOF and we're not interested in read errors.
+		body, _ := ioutil.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("%s returned HTTP status %s: %q", api.url.String(), resp.Status, body)
+	}
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if api.Debug {
-		log.Printf("D! Response Body:%s", string(body))
+		log.Printf("D! [inputs.mailchimp] response Body: %q", string(body))
 	}
 
 	if err = chimpErrorCheck(body); err != nil {
@@ -171,7 +180,7 @@ type Report struct {
 	Unsubscribed  int    `json:"unsubscribed"`
 	SendTime      string `json:"send_time"`
 
-	TimeSeries    []TimeSerie
+	TimeSeries    []TimeSeries
 	Bounces       Bounces       `json:"bounces"`
 	Forwards      Forwards      `json:"forwards"`
 	Opens         Opens         `json:"opens"`
@@ -230,7 +239,7 @@ type ListStats struct {
 	ClickRate float64 `json:"click_rate"`
 }
 
-type TimeSerie struct {
+type TimeSeries struct {
 	TimeStamp       string `json:"timestamp"`
 	EmailsSent      int    `json:"emails_sent"`
 	UniqueOpens     int    `json:"unique_opens"`

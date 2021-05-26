@@ -28,26 +28,28 @@ var timeLayouts = map[string]string{
 	"ts-rfc3339":     "2006-01-02T15:04:05Z07:00",
 	"ts-rfc3339nano": "2006-01-02T15:04:05.999999999Z07:00",
 	"ts-httpd":       "02/Jan/2006:15:04:05 -0700",
-	// These three are not exactly "layouts", but they are special cases that
+	// These four are not exactly "layouts", but they are special cases that
 	// will get handled in the ParseLine function.
-	"ts-epoch":     "EPOCH",
-	"ts-epochnano": "EPOCH_NANO",
-	"ts-syslog":    "SYSLOG_TIMESTAMP",
-	"ts":           "GENERIC_TIMESTAMP", // try parsing all known timestamp layouts.
+	"ts-epoch":      "EPOCH",
+	"ts-epochnano":  "EPOCH_NANO",
+	"ts-epochmilli": "EPOCH_MILLI",
+	"ts-syslog":     "SYSLOG_TIMESTAMP",
+	"ts":            "GENERIC_TIMESTAMP", // try parsing all known timestamp layouts.
 }
 
 const (
-	MEASUREMENT       = "measurement"
-	INT               = "int"
-	TAG               = "tag"
-	FLOAT             = "float"
-	STRING            = "string"
-	DURATION          = "duration"
-	DROP              = "drop"
-	EPOCH             = "EPOCH"
-	EPOCH_NANO        = "EPOCH_NANO"
-	SYSLOG_TIMESTAMP  = "SYSLOG_TIMESTAMP"
-	GENERIC_TIMESTAMP = "GENERIC_TIMESTAMP"
+	Measurement      = "measurement"
+	Int              = "int"
+	Tag              = "tag"
+	Float            = "float"
+	String           = "string"
+	Duration         = "duration"
+	Drop             = "drop"
+	Epoch            = "EPOCH"
+	EpochMilli       = "EPOCH_MILLI"
+	EpochNano        = "EPOCH_NANO"
+	SyslogTimestamp  = "SYSLOG_TIMESTAMP"
+	GenericTimestamp = "GENERIC_TIMESTAMP"
 )
 
 var (
@@ -159,7 +161,7 @@ func (p *Parser) Compile() error {
 
 	// Combine user-supplied CustomPatterns with DEFAULT_PATTERNS and parse
 	// them together as the same type of pattern.
-	p.CustomPatterns = DEFAULT_PATTERNS + p.CustomPatterns
+	p.CustomPatterns = DefaultPatterns + p.CustomPatterns
 	if len(p.CustomPatterns) != 0 {
 		scanner := bufio.NewScanner(strings.NewReader(p.CustomPatterns))
 		p.addCustomPatterns(scanner)
@@ -241,38 +243,38 @@ func (p *Parser) ParseLine(line string) (telegraf.Metric, error) {
 		}
 		// if we didn't find a type OR timestamp modifier, assume string
 		if t == "" {
-			t = STRING
+			t = String
 		}
 
 		switch t {
-		case MEASUREMENT:
+		case Measurement:
 			p.Measurement = v
-		case INT:
-			iv, err := strconv.ParseInt(v, 10, 64)
+		case Int:
+			iv, err := strconv.ParseInt(v, 0, 64)
 			if err != nil {
 				log.Printf("E! Error parsing %s to int: %s", v, err)
 			} else {
 				fields[k] = iv
 			}
-		case FLOAT:
+		case Float:
 			fv, err := strconv.ParseFloat(v, 64)
 			if err != nil {
 				log.Printf("E! Error parsing %s to float: %s", v, err)
 			} else {
 				fields[k] = fv
 			}
-		case DURATION:
+		case Duration:
 			d, err := time.ParseDuration(v)
 			if err != nil {
 				log.Printf("E! Error parsing %s to duration: %s", v, err)
 			} else {
 				fields[k] = int64(d)
 			}
-		case TAG:
+		case Tag:
 			tags[k] = v
-		case STRING:
+		case String:
 			fields[k] = v
-		case EPOCH:
+		case Epoch:
 			parts := strings.SplitN(v, ".", 2)
 			if len(parts) == 0 {
 				log.Printf("E! Error parsing %s to timestamp: %s", v, err)
@@ -297,14 +299,21 @@ func (p *Parser) ParseLine(line string) (telegraf.Metric, error) {
 				ts = ts.Add(time.Duration(nanosec) * time.Nanosecond)
 			}
 			timestamp = ts
-		case EPOCH_NANO:
+		case EpochMilli:
+			ms, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				log.Printf("E! Error parsing %s to int: %s", v, err)
+			} else {
+				timestamp = time.Unix(0, ms*int64(time.Millisecond))
+			}
+		case EpochNano:
 			iv, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {
 				log.Printf("E! Error parsing %s to int: %s", v, err)
 			} else {
 				timestamp = time.Unix(0, iv)
 			}
-		case SYSLOG_TIMESTAMP:
+		case SyslogTimestamp:
 			ts, err := time.ParseInLocation(time.Stamp, v, p.loc)
 			if err == nil {
 				if ts.Year() == 0 {
@@ -314,7 +323,7 @@ func (p *Parser) ParseLine(line string) (telegraf.Metric, error) {
 			} else {
 				log.Printf("E! Error parsing %s to time layout [%s]: %s", v, t, err)
 			}
-		case GENERIC_TIMESTAMP:
+		case GenericTimestamp:
 			var foundTs bool
 			// first try timestamp layouts that we've already found
 			for _, layout := range p.foundTsLayouts {
@@ -344,7 +353,7 @@ func (p *Parser) ParseLine(line string) (telegraf.Metric, error) {
 				log.Printf("E! Error parsing timestamp [%s], could not find any "+
 					"suitable time layouts.", v)
 			}
-		case DROP:
+		case Drop:
 		// goodbye!
 		default:
 			v = strings.Replace(v, ",", ".", -1)
@@ -361,14 +370,13 @@ func (p *Parser) ParseLine(line string) (telegraf.Metric, error) {
 	}
 
 	if p.UniqueTimestamp != "auto" {
-		return metric.New(p.Measurement, tags, fields, timestamp)
+		return metric.New(p.Measurement, tags, fields, timestamp), nil
 	}
 
-	return metric.New(p.Measurement, tags, fields, p.tsModder.tsMod(timestamp))
+	return metric.New(p.Measurement, tags, fields, p.tsModder.tsMod(timestamp)), nil
 }
 
 func (p *Parser) Parse(buf []byte) ([]telegraf.Metric, error) {
-
 	metrics := make([]telegraf.Metric, 0)
 
 	scanner := bufio.NewScanner(bytes.NewReader(buf))

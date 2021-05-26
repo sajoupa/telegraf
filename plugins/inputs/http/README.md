@@ -26,9 +26,22 @@ The HTTP input plugin collects metrics from one or more HTTP(S) endpoints.  The 
   ## compress body or "identity" to apply no encoding.
   # content_encoding = "identity"
 
+  ## Optional file with Bearer token
+  ## file content is added as an Authorization header
+  # bearer_token = "/path/to/file"
+
   ## Optional HTTP Basic Auth Credentials
   # username = "username"
   # password = "pa$$word"
+
+  ## OAuth2 Client Credentials. The options 'client_id', 'client_secret', and 'token_url' are required to use OAuth2.
+  # client_id = "clientid"
+  # client_secret = "secret"
+  # token_url = "https://indentityprovider/oauth2/v1/token"
+  # scopes = ["urn:opc:idm:__myscopes__"]
+
+  ## HTTP Proxy support
+  # http_proxy_url = ""
 
   ## Optional TLS Config
   # tls_ca = "/etc/telegraf/ca.pem"
@@ -39,6 +52,9 @@ The HTTP input plugin collects metrics from one or more HTTP(S) endpoints.  The 
 
   ## Amount of time allowed to complete the HTTP request
   # timeout = "5s"
+
+  ## List of success status codes
+  # success_status_codes = [200]
 
   ## Data format to consume.
   ## Each data format has its own unique set of configuration options, read

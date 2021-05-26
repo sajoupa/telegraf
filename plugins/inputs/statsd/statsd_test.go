@@ -1,54 +1,46 @@
 package statsd
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/influxdata/telegraf/testutil"
+	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/influxdata/telegraf/testutil"
 )
 
 const (
-	testMsg = "test.tcp.msg:100|c"
+	testMsg         = "test.tcp.msg:100|c"
+	producerThreads = 10
 )
 
-func newTestTcpListener() (*Statsd, chan *bytes.Buffer) {
-	in := make(chan *bytes.Buffer, 1500)
-	listener := &Statsd{
-		Protocol:               "tcp",
-		ServiceAddress:         "localhost:8125",
-		AllowedPendingMessages: 10000,
-		MaxTCPConnections:      250,
-		in:                     in,
-		done:                   make(chan struct{}),
-	}
-	return listener, in
-}
-
 func NewTestStatsd() *Statsd {
-	s := Statsd{}
+	s := Statsd{Log: testutil.Logger{}}
 
 	// Make data structures
 	s.done = make(chan struct{})
-	s.in = make(chan *bytes.Buffer, s.AllowedPendingMessages)
+	s.in = make(chan input, s.AllowedPendingMessages)
 	s.gauges = make(map[string]cachedgauge)
 	s.counters = make(map[string]cachedcounter)
 	s.sets = make(map[string]cachedset)
 	s.timings = make(map[string]cachedtimings)
+	s.distributions = make([]cacheddistributions, 0)
 
 	s.MetricSeparator = "_"
 
 	return &s
 }
 
-// Test that MaxTCPConections is respected
+// Test that MaxTCPConnections is respected
 func TestConcurrentConns(t *testing.T) {
 	listener := Statsd{
+		Log:                    testutil.Logger{},
 		Protocol:               "tcp",
 		ServiceAddress:         "localhost:8125",
 		AllowedPendingMessages: 10000,
@@ -68,7 +60,7 @@ func TestConcurrentConns(t *testing.T) {
 	// Connection over the limit:
 	conn, err := net.Dial("tcp", "127.0.0.1:8125")
 	assert.NoError(t, err)
-	net.Dial("tcp", "127.0.0.1:8125")
+	_, err = net.Dial("tcp", "127.0.0.1:8125")
 	assert.NoError(t, err)
 	_, err = conn.Write([]byte(testMsg))
 	assert.NoError(t, err)
@@ -76,9 +68,10 @@ func TestConcurrentConns(t *testing.T) {
 	assert.Zero(t, acc.NFields())
 }
 
-// Test that MaxTCPConections is respected when max==1
+// Test that MaxTCPConnections is respected when max==1
 func TestConcurrentConns1(t *testing.T) {
 	listener := Statsd{
+		Log:                    testutil.Logger{},
 		Protocol:               "tcp",
 		ServiceAddress:         "localhost:8125",
 		AllowedPendingMessages: 10000,
@@ -96,7 +89,7 @@ func TestConcurrentConns1(t *testing.T) {
 	// Connection over the limit:
 	conn, err := net.Dial("tcp", "127.0.0.1:8125")
 	assert.NoError(t, err)
-	net.Dial("tcp", "127.0.0.1:8125")
+	_, err = net.Dial("tcp", "127.0.0.1:8125")
 	assert.NoError(t, err)
 	_, err = conn.Write([]byte(testMsg))
 	assert.NoError(t, err)
@@ -104,9 +97,10 @@ func TestConcurrentConns1(t *testing.T) {
 	assert.Zero(t, acc.NFields())
 }
 
-// Test that MaxTCPConections is respected
+// Test that MaxTCPConnections is respected
 func TestCloseConcurrentConns(t *testing.T) {
 	listener := Statsd{
+		Log:                    testutil.Logger{},
 		Protocol:               "tcp",
 		ServiceAddress:         "localhost:8125",
 		AllowedPendingMessages: 10000,
@@ -128,6 +122,7 @@ func TestCloseConcurrentConns(t *testing.T) {
 // benchmark how long it takes to accept & process 100,000 metrics:
 func BenchmarkUDP(b *testing.B) {
 	listener := Statsd{
+		Log:                    testutil.Logger{},
 		Protocol:               "udp",
 		ServiceAddress:         "localhost:8125",
 		AllowedPendingMessages: 250000,
@@ -136,28 +131,39 @@ func BenchmarkUDP(b *testing.B) {
 
 	// send multiple messages to socket
 	for n := 0; n < b.N; n++ {
-		err := listener.Start(acc)
-		if err != nil {
-			panic(err)
-		}
+		require.NoError(b, listener.Start(acc))
 
 		time.Sleep(time.Millisecond * 250)
 		conn, err := net.Dial("udp", "127.0.0.1:8125")
-		if err != nil {
-			panic(err)
+		require.NoError(b, err)
+
+		var wg sync.WaitGroup
+		for i := 1; i <= producerThreads; i++ {
+			wg.Add(1)
+			go sendRequests(conn, &wg)
 		}
-		for i := 0; i < 250000; i++ {
-			fmt.Fprintf(conn, testMsg)
-		}
+		wg.Wait()
+
 		// wait for 250,000 metrics to get added to accumulator
-		time.Sleep(time.Millisecond)
+		for len(listener.in) > 0 {
+			time.Sleep(time.Millisecond)
+		}
 		listener.Stop()
+	}
+}
+
+func sendRequests(conn net.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i := 0; i < 25000; i++ {
+		//nolint:errcheck,revive
+		fmt.Fprintf(conn, testMsg)
 	}
 }
 
 // benchmark how long it takes to accept & process 100,000 metrics:
 func BenchmarkTCP(b *testing.B) {
 	listener := Statsd{
+		Log:                    testutil.Logger{},
 		Protocol:               "tcp",
 		ServiceAddress:         "localhost:8125",
 		AllowedPendingMessages: 250000,
@@ -167,21 +173,22 @@ func BenchmarkTCP(b *testing.B) {
 
 	// send multiple messages to socket
 	for n := 0; n < b.N; n++ {
-		err := listener.Start(acc)
-		if err != nil {
-			panic(err)
-		}
+		require.NoError(b, listener.Start(acc))
 
 		time.Sleep(time.Millisecond * 250)
 		conn, err := net.Dial("tcp", "127.0.0.1:8125")
-		if err != nil {
-			panic(err)
+		require.NoError(b, err)
+
+		var wg sync.WaitGroup
+		for i := 1; i <= producerThreads; i++ {
+			wg.Add(1)
+			go sendRequests(conn, &wg)
 		}
-		for i := 0; i < 250000; i++ {
-			fmt.Fprintf(conn, testMsg)
-		}
+		wg.Wait()
 		// wait for 250,000 metrics to get added to accumulator
-		time.Sleep(time.Millisecond)
+		for len(listener.in) > 0 {
+			time.Sleep(time.Millisecond)
+		}
 		listener.Stop()
 	}
 }
@@ -189,7 +196,7 @@ func BenchmarkTCP(b *testing.B) {
 // Valid lines should be parsed and their values should be cached
 func TestParse_ValidLines(t *testing.T) {
 	s := NewTestStatsd()
-	valid_lines := []string{
+	validLines := []string{
 		"valid:45|c",
 		"valid:45|s",
 		"valid:45|g",
@@ -197,11 +204,8 @@ func TestParse_ValidLines(t *testing.T) {
 		"valid.timer:45|h",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoError(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 }
 
@@ -210,7 +214,7 @@ func TestParse_Gauges(t *testing.T) {
 	s := NewTestStatsd()
 
 	// Test that gauge +- values work
-	valid_lines := []string{
+	validLines := []string{
 		"plus.minus:100|g",
 		"plus.minus:-10|g",
 		"plus.minus:+30|g",
@@ -228,11 +232,8 @@ func TestParse_Gauges(t *testing.T) {
 		"scientific.notation.minus:4.7E-5|g",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -274,10 +275,7 @@ func TestParse_Gauges(t *testing.T) {
 	}
 
 	for _, test := range validations {
-		err := test_validate_gauge(test.name, test.value, s.gauges)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateGauge(test.name, test.value, s.gauges))
 	}
 }
 
@@ -286,7 +284,7 @@ func TestParse_Sets(t *testing.T) {
 	s := NewTestStatsd()
 
 	// Test that sets work
-	valid_lines := []string{
+	validLines := []string{
 		"unique.user.ids:100|s",
 		"unique.user.ids:100|s",
 		"unique.user.ids:100|s",
@@ -306,11 +304,8 @@ func TestParse_Sets(t *testing.T) {
 		"string.sets:bar|s",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -336,10 +331,7 @@ func TestParse_Sets(t *testing.T) {
 	}
 
 	for _, test := range validations {
-		err := test_validate_set(test.name, test.value, s.sets)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateSet(test.name, test.value, s.sets))
 	}
 }
 
@@ -348,7 +340,7 @@ func TestParse_Counters(t *testing.T) {
 	s := NewTestStatsd()
 
 	// Test that counters work
-	valid_lines := []string{
+	validLines := []string{
 		"small.inc:1|c",
 		"big.inc:100|c",
 		"big.inc:1|c",
@@ -363,11 +355,8 @@ func TestParse_Counters(t *testing.T) {
 		"negative.test:-5|c",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -401,21 +390,18 @@ func TestParse_Counters(t *testing.T) {
 	}
 
 	for _, test := range validations {
-		err := test_validate_counter(test.name, test.value, s.counters)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters))
 	}
 }
 
 // Tests low-level functionality of timings
 func TestParse_Timings(t *testing.T) {
 	s := NewTestStatsd()
-	s.Percentiles = []int{90}
+	s.Percentiles = []float64{90.0}
 	acc := &testutil.Accumulator{}
 
-	// Test that counters work
-	valid_lines := []string{
+	// Test that timings work
+	validLines := []string{
 		"test.timing:1|ms",
 		"test.timing:11|ms",
 		"test.timing:1|ms",
@@ -423,14 +409,11 @@ func TestParse_Timings(t *testing.T) {
 		"test.timing:1|ms",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	s.Gather(acc)
+	require.NoError(t, s.Gather(acc))
 
 	valid := map[string]interface{}{
 		"90_percentile": float64(11),
@@ -445,6 +428,60 @@ func TestParse_Timings(t *testing.T) {
 	acc.AssertContainsFields(t, "test_timing", valid)
 }
 
+// Tests low-level functionality of distributions
+func TestParse_Distributions(t *testing.T) {
+	s := NewTestStatsd()
+	acc := &testutil.Accumulator{}
+
+	parseMetrics := func() {
+		// Test that distributions work
+		validLines := []string{
+			"test.distribution:1|d",
+			"test.distribution2:2|d",
+			"test.distribution3:3|d",
+			"test.distribution4:1|d",
+			"test.distribution5:1|d",
+		}
+
+		for _, line := range validLines {
+			require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
+		}
+
+		require.NoError(t, s.Gather(acc))
+	}
+
+	validMeasurementMap := map[string]float64{
+		"test_distribution":  1,
+		"test_distribution2": 2,
+		"test_distribution3": 3,
+		"test_distribution4": 1,
+		"test_distribution5": 1,
+	}
+
+	// Test parsing when DataDogExtensions and DataDogDistributions aren't enabled
+	parseMetrics()
+	for key := range validMeasurementMap {
+		acc.AssertDoesNotContainMeasurement(t, key)
+	}
+
+	// Test parsing when DataDogDistributions is enabled but not DataDogExtensions
+	s.DataDogDistributions = true
+	parseMetrics()
+	for key := range validMeasurementMap {
+		acc.AssertDoesNotContainMeasurement(t, key)
+	}
+
+	// Test parsing when DataDogExtensions and DataDogDistributions are enabled
+	s.DataDogExtensions = true
+	parseMetrics()
+	for key, value := range validMeasurementMap {
+		field := map[string]interface{}{
+			"value": float64(value),
+		}
+		acc.AssertContainsFields(t, key, field)
+	}
+}
+
 func TestParseScientificNotation(t *testing.T) {
 	s := NewTestStatsd()
 	sciNotationLines := []string{
@@ -454,17 +491,14 @@ func TestParseScientificNotation(t *testing.T) {
 		"scientific.notation:4.6968460083008E-5|h",
 	}
 	for _, line := range sciNotationLines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line [%s] should not have resulted in error: %s\n", line, err)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line [%s] should not have resulted in error", line)
 	}
 }
 
 // Invalid lines should return an error
 func TestParse_InvalidLines(t *testing.T) {
 	s := NewTestStatsd()
-	invalid_lines := []string{
+	invalidLines := []string{
 		"i.dont.have.a.pipe:45g",
 		"i.dont.have.a.colon45|c",
 		"invalid.metric.type:45|e",
@@ -475,32 +509,26 @@ func TestParse_InvalidLines(t *testing.T) {
 		"invalid.value:d11|c",
 		"invalid.value:1d1|c",
 	}
-	for _, line := range invalid_lines {
-		err := s.parseStatsdLine(line)
-		if err == nil {
-			t.Errorf("Parsing line %s should have resulted in an error\n", line)
-		}
+	for _, line := range invalidLines {
+		require.Errorf(t, s.parseStatsdLine(line), "Parsing line %s should have resulted in an error", line)
 	}
 }
 
 // Invalid sample rates should be ignored and not applied
 func TestParse_InvalidSampleRate(t *testing.T) {
 	s := NewTestStatsd()
-	invalid_lines := []string{
+	invalidLines := []string{
 		"invalid.sample.rate:45|c|0.1",
 		"invalid.sample.rate.2:45|c|@foo",
 		"invalid.sample.rate:45|g|@0.1",
 		"invalid.sample.rate:45|s|@0.1",
 	}
 
-	for _, line := range invalid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range invalidLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	counter_validations := []struct {
+	counterValidations := []struct {
 		name  string
 		value int64
 		cache map[string]cachedcounter
@@ -517,37 +545,25 @@ func TestParse_InvalidSampleRate(t *testing.T) {
 		},
 	}
 
-	for _, test := range counter_validations {
-		err := test_validate_counter(test.name, test.value, test.cache)
-		if err != nil {
-			t.Error(err.Error())
-		}
+	for _, test := range counterValidations {
+		require.NoError(t, testValidateCounter(test.name, test.value, test.cache))
 	}
 
-	err := test_validate_gauge("invalid_sample_rate", 45, s.gauges)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("invalid_sample_rate", 45, s.gauges))
 
-	err = test_validate_set("invalid_sample_rate", 1, s.sets)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateSet("invalid_sample_rate", 1, s.sets))
 }
 
 // Names should be parsed like . -> _
 func TestParse_DefaultNameParsing(t *testing.T) {
 	s := NewTestStatsd()
-	valid_lines := []string{
+	validLines := []string{
 		"valid:1|c",
 		"valid.foo-bar:11|c",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -565,10 +581,7 @@ func TestParse_DefaultNameParsing(t *testing.T) {
 	}
 
 	for _, test := range validations {
-		err := test_validate_counter(test.name, test.value, s.counters)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters))
 	}
 }
 
@@ -585,10 +598,7 @@ func TestParse_Template(t *testing.T) {
 	}
 
 	for _, line := range lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -607,10 +617,7 @@ func TestParse_Template(t *testing.T) {
 
 	// Validate counters
 	for _, test := range validations {
-		err := test_validate_counter(test.name, test.value, s.counters)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters))
 	}
 }
 
@@ -627,10 +634,7 @@ func TestParse_TemplateFilter(t *testing.T) {
 	}
 
 	for _, line := range lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -649,10 +653,7 @@ func TestParse_TemplateFilter(t *testing.T) {
 
 	// Validate counters
 	for _, test := range validations {
-		err := test_validate_counter(test.name, test.value, s.counters)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters))
 	}
 }
 
@@ -669,10 +670,7 @@ func TestParse_TemplateSpecificity(t *testing.T) {
 	}
 
 	for _, line := range lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
 	validations := []struct {
@@ -687,10 +685,7 @@ func TestParse_TemplateSpecificity(t *testing.T) {
 
 	// Validate counters
 	for _, test := range validations {
-		err := test_validate_counter(test.name, test.value, s.counters)
-		if err != nil {
-			t.Error(err.Error())
-		}
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters))
 	}
 }
 
@@ -717,13 +712,10 @@ func TestParse_TemplateFields(t *testing.T) {
 	}
 
 	for _, line := range lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	counter_tests := []struct {
+	counterTests := []struct {
 		name  string
 		value int64
 		field string
@@ -745,14 +737,11 @@ func TestParse_TemplateFields(t *testing.T) {
 		},
 	}
 	// Validate counters
-	for _, test := range counter_tests {
-		err := test_validate_counter(test.name, test.value, s.counters, test.field)
-		if err != nil {
-			t.Error(err.Error())
-		}
+	for _, test := range counterTests {
+		require.NoError(t, testValidateCounter(test.name, test.value, s.counters, test.field))
 	}
 
-	gauge_tests := []struct {
+	gaugeTests := []struct {
 		name  string
 		value float64
 		field string
@@ -769,14 +758,11 @@ func TestParse_TemplateFields(t *testing.T) {
 		},
 	}
 	// Validate gauges
-	for _, test := range gauge_tests {
-		err := test_validate_gauge(test.name, test.value, s.gauges, test.field)
-		if err != nil {
-			t.Error(err.Error())
-		}
+	for _, test := range gaugeTests {
+		require.NoError(t, testValidateGauge(test.name, test.value, s.gauges, test.field))
 	}
 
-	set_tests := []struct {
+	setTests := []struct {
 		name  string
 		value int64
 		field string
@@ -793,11 +779,8 @@ func TestParse_TemplateFields(t *testing.T) {
 		},
 	}
 	// Validate sets
-	for _, test := range set_tests {
-		err := test_validate_set(test.name, test.value, s.sets, test.field)
-		if err != nil {
-			t.Error(err.Error())
-		}
+	for _, test := range setTests {
+		require.NoError(t, testValidateSet(test.name, test.value, s.sets, test.field))
 	}
 }
 
@@ -845,99 +828,133 @@ func TestParse_Tags(t *testing.T) {
 
 	for _, test := range tests {
 		name, _, tags := s.parseName(test.bucket)
-		if name != test.name {
-			t.Errorf("Expected: %s, got %s", test.name, name)
-		}
+		require.Equalf(t, name, test.name, "Expected: %s, got %s", test.name, name)
 
 		for k, v := range test.tags {
 			actual, ok := tags[k]
-			if !ok {
-				t.Errorf("Expected key: %s not found", k)
-			}
-			if actual != v {
-				t.Errorf("Expected %s, got %s", v, actual)
-			}
+			require.Truef(t, ok, "Expected key: %s not found", k)
+			require.Equalf(t, actual, v, "Expected %s, got %s", v, actual)
 		}
 	}
 }
 
-// Test that DataDog tags are parsed
 func TestParse_DataDogTags(t *testing.T) {
-	s := NewTestStatsd()
-	s.ParseDataDogTags = true
-
-	lines := []string{
-		"my_counter:1|c|#host:localhost,environment:prod,endpoint:/:tenant?/oauth/ro",
-		"my_gauge:10.1|g|#live",
-		"my_set:1|s|#host:localhost",
-		"my_timer:3|ms|@0.1|#live,host:localhost",
-	}
-
-	testTags := map[string]map[string]string{
-		"my_counter": {
-			"host":        "localhost",
-			"environment": "prod",
-			"endpoint":    "/:tenant?/oauth/ro",
+	tests := []struct {
+		name     string
+		line     string
+		expected []telegraf.Metric
+	}{
+		{
+			name: "counter",
+			line: "my_counter:1|c|#host:localhost,environment:prod,endpoint:/:tenant?/oauth/ro",
+			expected: []telegraf.Metric{
+				testutil.MustMetric(
+					"my_counter",
+					map[string]string{
+						"endpoint":    "/:tenant?/oauth/ro",
+						"environment": "prod",
+						"host":        "localhost",
+						"metric_type": "counter",
+					},
+					map[string]interface{}{
+						"value": 1,
+					},
+					time.Now(),
+					telegraf.Counter,
+				),
+			},
 		},
-
-		"my_gauge": {
-			"live": "",
+		{
+			name: "gauge",
+			line: "my_gauge:10.1|g|#live",
+			expected: []telegraf.Metric{
+				testutil.MustMetric(
+					"my_gauge",
+					map[string]string{
+						"live":        "true",
+						"metric_type": "gauge",
+					},
+					map[string]interface{}{
+						"value": 10.1,
+					},
+					time.Now(),
+					telegraf.Gauge,
+				),
+			},
 		},
-
-		"my_set": {
-			"host": "localhost",
+		{
+			name: "set",
+			line: "my_set:1|s|#host:localhost",
+			expected: []telegraf.Metric{
+				testutil.MustMetric(
+					"my_set",
+					map[string]string{
+						"host":        "localhost",
+						"metric_type": "set",
+					},
+					map[string]interface{}{
+						"value": 1,
+					},
+					time.Now(),
+				),
+			},
 		},
-
-		"my_timer": {
-			"live": "",
-			"host": "localhost",
+		{
+			name: "timer",
+			line: "my_timer:3|ms|@0.1|#live,host:localhost",
+			expected: []telegraf.Metric{
+				testutil.MustMetric(
+					"my_timer",
+					map[string]string{
+						"host":        "localhost",
+						"live":        "true",
+						"metric_type": "timing",
+					},
+					map[string]interface{}{
+						"count":  10,
+						"lower":  float64(3),
+						"mean":   float64(3),
+						"stddev": float64(0),
+						"sum":    float64(30),
+						"upper":  float64(3),
+					},
+					time.Now(),
+				),
+			},
+		},
+		{
+			name: "empty tag set",
+			line: "cpu:42|c|#",
+			expected: []telegraf.Metric{
+				testutil.MustMetric(
+					"cpu",
+					map[string]string{
+						"metric_type": "counter",
+					},
+					map[string]interface{}{
+						"value": 42,
+					},
+					time.Now(),
+					telegraf.Counter,
+				),
+			},
 		},
 	}
 
-	for _, line := range lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var acc testutil.Accumulator
 
-	sourceTags := map[string]map[string]string{
-		"my_gauge":   tagsForItem(s.gauges),
-		"my_counter": tagsForItem(s.counters),
-		"my_set":     tagsForItem(s.sets),
-		"my_timer":   tagsForItem(s.timings),
-	}
+			s := NewTestStatsd()
+			s.DataDogExtensions = true
 
-	for statName, tags := range testTags {
-		for k, v := range tags {
-			otherValue := sourceTags[statName][k]
-			if sourceTags[statName][k] != v {
-				t.Errorf("Error with %s, tag %s: %s != %s", statName, k, v, otherValue)
-			}
-		}
-	}
-}
+			require.NoError(t, s.parseStatsdLine(tt.line))
+			require.NoError(t, s.Gather(&acc))
 
-func tagsForItem(m interface{}) map[string]string {
-	switch m.(type) {
-	case map[string]cachedcounter:
-		for _, v := range m.(map[string]cachedcounter) {
-			return v.tags
-		}
-	case map[string]cachedgauge:
-		for _, v := range m.(map[string]cachedgauge) {
-			return v.tags
-		}
-	case map[string]cachedset:
-		for _, v := range m.(map[string]cachedset) {
-			return v.tags
-		}
-	case map[string]cachedtimings:
-		for _, v := range m.(map[string]cachedtimings) {
-			return v.tags
-		}
+			testutil.RequireMetricsEqual(t, tt.expected, acc.GetTelegrafMetrics(),
+				testutil.SortMetrics(), testutil.IgnoreTime())
+		})
 	}
-	return nil
 }
 
 // Test that statsd buckets are parsed to measurement names properly
@@ -945,8 +962,8 @@ func TestParseName(t *testing.T) {
 	s := NewTestStatsd()
 
 	tests := []struct {
-		in_name  string
-		out_name string
+		inName  string
+		outName string
 	}{
 		{
 			"foobar",
@@ -963,18 +980,16 @@ func TestParseName(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		name, _, _ := s.parseName(test.in_name)
-		if name != test.out_name {
-			t.Errorf("Expected: %s, got %s", test.out_name, name)
-		}
+		name, _, _ := s.parseName(test.inName)
+		require.Equalf(t, name, test.outName, "Expected: %s, got %s", test.outName, name)
 	}
 
 	// Test with separator == "."
 	s.MetricSeparator = "."
 
 	tests = []struct {
-		in_name  string
-		out_name string
+		inName  string
+		outName string
 	}{
 		{
 			"foobar",
@@ -991,10 +1006,8 @@ func TestParseName(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		name, _, _ := s.parseName(test.in_name)
-		if name != test.out_name {
-			t.Errorf("Expected: %s, got %s", test.out_name, name)
-		}
+		name, _, _ := s.parseName(test.inName)
+		require.Equalf(t, name, test.outName, "Expected: %s, got %s", test.outName, name)
 	}
 }
 
@@ -1004,27 +1017,84 @@ func TestParse_MeasurementsWithSameName(t *testing.T) {
 	s := NewTestStatsd()
 
 	// Test that counters work
-	valid_lines := []string{
+	validLines := []string{
 		"test.counter,host=localhost:1|c",
 		"test.counter,host=localhost,region=west:1|c",
 	}
 
-	for _, line := range valid_lines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range validLines {
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	if len(s.counters) != 2 {
-		t.Errorf("Expected 2 separate measurements, found %d", len(s.counters))
-	}
+	require.Lenf(t, s.counters, 2, "Expected 2 separate measurements, found %d", len(s.counters))
+}
+
+// Test that the metric caches expire (clear) an entry after the entry hasn't been updated for the configurable MaxTTL duration.
+func TestCachesExpireAfterMaxTTL(t *testing.T) {
+	s := NewTestStatsd()
+	s.MaxTTL = config.Duration(100 * time.Microsecond)
+
+	acc := &testutil.Accumulator{}
+	require.NoError(t, s.parseStatsdLine("valid:45|c"))
+	require.NoError(t, s.parseStatsdLine("valid:45|c"))
+	require.NoError(t, s.Gather(acc))
+
+	// Max TTL goes by, our 'valid' entry is cleared.
+	time.Sleep(100 * time.Microsecond)
+	require.NoError(t, s.Gather(acc))
+
+	// Now when we gather, we should have a counter that is reset to zero.
+	require.NoError(t, s.parseStatsdLine("valid:45|c"))
+	require.NoError(t, s.Gather(acc))
+
+	// Wait for the metrics to arrive
+	acc.Wait(3)
+
+	testutil.RequireMetricsEqual(t,
+		[]telegraf.Metric{
+			testutil.MustMetric(
+				"valid",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 90,
+				},
+				time.Now(),
+				telegraf.Counter,
+			),
+			testutil.MustMetric(
+				"valid",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 90,
+				},
+				time.Now(),
+				telegraf.Counter,
+			),
+			testutil.MustMetric(
+				"valid",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 45,
+				},
+				time.Now(),
+				telegraf.Counter,
+			),
+		},
+		acc.GetTelegrafMetrics(),
+		testutil.IgnoreTime(),
+	)
 }
 
 // Test that measurements with multiple bits, are treated as different outputs
 // but are equal to their single-measurement representation
 func TestParse_MeasurementsWithMultipleValues(t *testing.T) {
-	single_lines := []string{
+	singleLines := []string{
 		"valid.multiple:0|ms|@0.1",
 		"valid.multiple:0|ms|",
 		"valid.multiple:1|ms",
@@ -1050,7 +1120,7 @@ func TestParse_MeasurementsWithMultipleValues(t *testing.T) {
 		"valid.multiple.mixed:1|g",
 	}
 
-	multiple_lines := []string{
+	multipleLines := []string{
 		"valid.multiple:0|ms|@0.1:0|ms|:1|ms",
 		"valid.multiple.duplicate:1|c:1|c:2|c:1|c",
 		"valid.multiple.duplicate:1|h:1|h:2|h:1|h",
@@ -1059,104 +1129,64 @@ func TestParse_MeasurementsWithMultipleValues(t *testing.T) {
 		"valid.multiple.mixed:1|c:1|ms:2|s:1|g",
 	}
 
-	s_single := NewTestStatsd()
-	s_multiple := NewTestStatsd()
+	sSingle := NewTestStatsd()
+	sMultiple := NewTestStatsd()
 
-	for _, line := range single_lines {
-		err := s_single.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range singleLines {
+		require.NoErrorf(t, sSingle.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	for _, line := range multiple_lines {
-		err := s_multiple.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+	for _, line := range multipleLines {
+		require.NoErrorf(t, sMultiple.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
 
-	if len(s_single.timings) != 3 {
-		t.Errorf("Expected 3 measurement, found %d", len(s_single.timings))
-	}
+	require.Lenf(t, sSingle.timings, 3, "Expected 3 measurement, found %d", len(sSingle.timings))
 
-	if cachedtiming, ok := s_single.timings["metric_type=timingvalid_multiple"]; !ok {
-		t.Errorf("Expected cached measurement with hash 'metric_type=timingvalid_multiple' not found")
-	} else {
-		if cachedtiming.name != "valid_multiple" {
-			t.Errorf("Expected the name to be 'valid_multiple', got %s", cachedtiming.name)
-		}
+	cachedtiming, ok := sSingle.timings["metric_type=timingvalid_multiple"]
+	require.Truef(t, ok, "Expected cached measurement with hash 'metric_type=timingvalid_multiple' not found")
+	require.Equalf(t, cachedtiming.name, "valid_multiple", "Expected the name to be 'valid_multiple', got %s", cachedtiming.name)
 
-		// A 0 at samplerate 0.1 will add 10 values of 0,
-		// A 0 with invalid samplerate will add a single 0,
-		// plus the last bit of value 1
-		// which adds up to 12 individual datapoints to be cached
-		if cachedtiming.fields[defaultFieldName].n != 12 {
-			t.Errorf("Expected 12 additions, got %d", cachedtiming.fields[defaultFieldName].n)
-		}
+	// A 0 at samplerate 0.1 will add 10 values of 0,
+	// A 0 with invalid samplerate will add a single 0,
+	// plus the last bit of value 1
+	// which adds up to 12 individual datapoints to be cached
+	require.EqualValuesf(t, cachedtiming.fields[defaultFieldName].n, 12, "Expected 12 additions, got %d", cachedtiming.fields[defaultFieldName].n)
 
-		if cachedtiming.fields[defaultFieldName].upper != 1 {
-			t.Errorf("Expected max input to be 1, got %f", cachedtiming.fields[defaultFieldName].upper)
-		}
-	}
+	require.EqualValuesf(t, cachedtiming.fields[defaultFieldName].upper, 1, "Expected max input to be 1, got %f", cachedtiming.fields[defaultFieldName].upper)
 
-	// test if s_single and s_multiple did compute the same stats for valid.multiple.duplicate
-	if err := test_validate_set("valid_multiple_duplicate", 2, s_single.sets); err != nil {
-		t.Error(err.Error())
-	}
+	// test if sSingle and sMultiple did compute the same stats for valid.multiple.duplicate
+	require.NoError(t, testValidateSet("valid_multiple_duplicate", 2, sSingle.sets))
 
-	if err := test_validate_set("valid_multiple_duplicate", 2, s_multiple.sets); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateSet("valid_multiple_duplicate", 2, sMultiple.sets))
 
-	if err := test_validate_counter("valid_multiple_duplicate", 5, s_single.counters); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateCounter("valid_multiple_duplicate", 5, sSingle.counters))
 
-	if err := test_validate_counter("valid_multiple_duplicate", 5, s_multiple.counters); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateCounter("valid_multiple_duplicate", 5, sMultiple.counters))
 
-	if err := test_validate_gauge("valid_multiple_duplicate", 1, s_single.gauges); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("valid_multiple_duplicate", 1, sSingle.gauges))
 
-	if err := test_validate_gauge("valid_multiple_duplicate", 1, s_multiple.gauges); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("valid_multiple_duplicate", 1, sMultiple.gauges))
 
-	// test if s_single and s_multiple did compute the same stats for valid.multiple.mixed
-	if err := test_validate_set("valid_multiple_mixed", 1, s_single.sets); err != nil {
-		t.Error(err.Error())
-	}
+	// test if sSingle and sMultiple did compute the same stats for valid.multiple.mixed
+	require.NoError(t, testValidateSet("valid_multiple_mixed", 1, sSingle.sets))
 
-	if err := test_validate_set("valid_multiple_mixed", 1, s_multiple.sets); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateSet("valid_multiple_mixed", 1, sMultiple.sets))
 
-	if err := test_validate_counter("valid_multiple_mixed", 1, s_single.counters); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateCounter("valid_multiple_mixed", 1, sSingle.counters))
 
-	if err := test_validate_counter("valid_multiple_mixed", 1, s_multiple.counters); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateCounter("valid_multiple_mixed", 1, sMultiple.counters))
 
-	if err := test_validate_gauge("valid_multiple_mixed", 1, s_single.gauges); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("valid_multiple_mixed", 1, sSingle.gauges))
 
-	if err := test_validate_gauge("valid_multiple_mixed", 1, s_multiple.gauges); err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("valid_multiple_mixed", 1, sMultiple.gauges))
 }
 
 // Tests low-level functionality of timings when multiple fields is enabled
 // and a measurement template has been defined which can parse field names
-func TestParse_Timings_MultipleFieldsWithTemplate(t *testing.T) {
+func TestParse_TimingsMultipleFieldsWithTemplate(t *testing.T) {
 	s := NewTestStatsd()
 	s.Templates = []string{"measurement.field"}
-	s.Percentiles = []int{90}
+	s.Percentiles = []float64{90.0}
 	acc := &testutil.Accumulator{}
 
 	validLines := []string{
@@ -1173,12 +1203,9 @@ func TestParse_Timings_MultipleFieldsWithTemplate(t *testing.T) {
 	}
 
 	for _, line := range validLines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
-	s.Gather(acc)
+	require.NoError(t, s.Gather(acc))
 
 	valid := map[string]interface{}{
 		"success_90_percentile": float64(11),
@@ -1204,10 +1231,10 @@ func TestParse_Timings_MultipleFieldsWithTemplate(t *testing.T) {
 // Tests low-level functionality of timings when multiple fields is enabled
 // but a measurement template hasn't been defined so we can't parse field names
 // In this case the behaviour should be the same as normal behaviour
-func TestParse_Timings_MultipleFieldsWithoutTemplate(t *testing.T) {
+func TestParse_TimingsMultipleFieldsWithoutTemplate(t *testing.T) {
 	s := NewTestStatsd()
 	s.Templates = []string{}
-	s.Percentiles = []int{90}
+	s.Percentiles = []float64{90.0}
 	acc := &testutil.Accumulator{}
 
 	validLines := []string{
@@ -1224,12 +1251,9 @@ func TestParse_Timings_MultipleFieldsWithoutTemplate(t *testing.T) {
 	}
 
 	for _, line := range validLines {
-		err := s.parseStatsdLine(line)
-		if err != nil {
-			t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-		}
+		require.NoErrorf(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 	}
-	s.Gather(acc)
+	require.NoError(t, s.Gather(acc))
 
 	expectedSuccess := map[string]interface{}{
 		"90_percentile": float64(11),
@@ -1388,23 +1412,15 @@ func TestParse_Timings_Delete(t *testing.T) {
 	s := NewTestStatsd()
 	s.DeleteTimings = true
 	fakeacc := &testutil.Accumulator{}
-	var err error
 
 	line := "timing:100|ms"
-	err = s.parseStatsdLine(line)
-	if err != nil {
-		t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-	}
+	require.NoError(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 
-	if len(s.timings) != 1 {
-		t.Errorf("Should be 1 timing, found %d", len(s.timings))
-	}
+	require.Lenf(t, s.timings, 1, "Should be 1 timing, found %d", len(s.timings))
 
-	s.Gather(fakeacc)
+	require.NoError(t, s.Gather(fakeacc))
 
-	if len(s.timings) != 0 {
-		t.Errorf("All timings should have been deleted, found %d", len(s.timings))
-	}
+	require.Lenf(t, s.timings, 0, "All timings should have been deleted, found %d", len(s.timings))
 }
 
 // Tests the delete_gauges option
@@ -1412,25 +1428,15 @@ func TestParse_Gauges_Delete(t *testing.T) {
 	s := NewTestStatsd()
 	s.DeleteGauges = true
 	fakeacc := &testutil.Accumulator{}
-	var err error
 
 	line := "current.users:100|g"
-	err = s.parseStatsdLine(line)
-	if err != nil {
-		t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-	}
+	require.NoError(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 
-	err = test_validate_gauge("current_users", 100, s.gauges)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateGauge("current_users", 100, s.gauges))
 
-	s.Gather(fakeacc)
+	require.NoError(t, s.Gather(fakeacc))
 
-	err = test_validate_gauge("current_users", 100, s.gauges)
-	if err == nil {
-		t.Error("current_users_gauge metric should have been deleted")
-	}
+	require.Error(t, testValidateGauge("current_users", 100, s.gauges), "current_users_gauge metric should have been deleted")
 }
 
 // Tests the delete_sets option
@@ -1438,25 +1444,15 @@ func TestParse_Sets_Delete(t *testing.T) {
 	s := NewTestStatsd()
 	s.DeleteSets = true
 	fakeacc := &testutil.Accumulator{}
-	var err error
 
 	line := "unique.user.ids:100|s"
-	err = s.parseStatsdLine(line)
-	if err != nil {
-		t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-	}
+	require.NoError(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error", line)
 
-	err = test_validate_set("unique_user_ids", 1, s.sets)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateSet("unique_user_ids", 1, s.sets))
 
-	s.Gather(fakeacc)
+	require.NoError(t, s.Gather(fakeacc))
 
-	err = test_validate_set("unique_user_ids", 1, s.sets)
-	if err == nil {
-		t.Error("unique_user_ids_set metric should have been deleted")
-	}
+	require.Error(t, testValidateSet("unique_user_ids", 1, s.sets), "unique_user_ids_set metric should have been deleted")
 }
 
 // Tests the delete_counters option
@@ -1464,48 +1460,29 @@ func TestParse_Counters_Delete(t *testing.T) {
 	s := NewTestStatsd()
 	s.DeleteCounters = true
 	fakeacc := &testutil.Accumulator{}
-	var err error
 
 	line := "total.users:100|c"
-	err = s.parseStatsdLine(line)
-	if err != nil {
-		t.Errorf("Parsing line %s should not have resulted in an error\n", line)
-	}
+	require.NoError(t, s.parseStatsdLine(line), "Parsing line %s should not have resulted in an error\n", line)
 
-	err = test_validate_counter("total_users", 100, s.counters)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	require.NoError(t, testValidateCounter("total_users", 100, s.counters))
 
-	s.Gather(fakeacc)
+	require.NoError(t, s.Gather(fakeacc))
 
-	err = test_validate_counter("total_users", 100, s.counters)
-	if err == nil {
-		t.Error("total_users_counter metric should have been deleted")
-	}
+	require.Error(t, testValidateCounter("total_users", 100, s.counters), "total_users_counter metric should have been deleted")
 }
 
 func TestParseKeyValue(t *testing.T) {
 	k, v := parseKeyValue("foo=bar")
-	if k != "foo" {
-		t.Errorf("Expected %s, got %s", "foo", k)
-	}
-	if v != "bar" {
-		t.Errorf("Expected %s, got %s", "bar", v)
-	}
+	require.Equalf(t, k, "foo", "Expected %s, got %s", "foo", k)
+	require.Equalf(t, v, "bar", "Expected %s, got %s", "bar", v)
 
 	k2, v2 := parseKeyValue("baz")
-	if k2 != "" {
-		t.Errorf("Expected %s, got %s", "", k2)
-	}
-	if v2 != "baz" {
-		t.Errorf("Expected %s, got %s", "baz", v2)
-	}
+	require.Equalf(t, k2, "", "Expected %s, got %s", "", k2)
+	require.Equalf(t, v2, "baz", "Expected %s, got %s", "baz", v2)
 }
 
 // Test utility functions
-
-func test_validate_set(
+func testValidateSet(
 	name string,
 	value int64,
 	cache map[string]cachedset,
@@ -1527,17 +1504,16 @@ func test_validate_set(
 		}
 	}
 	if !found {
-		return errors.New(fmt.Sprintf("Test Error: Metric name %s not found\n", name))
+		return fmt.Errorf("test Error: Metric name %s not found", name)
 	}
 
 	if value != int64(len(metric.fields[f])) {
-		return errors.New(fmt.Sprintf("Measurement: %s, expected %d, actual %d\n",
-			name, value, len(metric.fields[f])))
+		return fmt.Errorf("measurement: %s, expected %d, actual %d", name, value, len(metric.fields[f]))
 	}
 	return nil
 }
 
-func test_validate_counter(
+func testValidateCounter(
 	name string,
 	valueExpected int64,
 	cache map[string]cachedcounter,
@@ -1559,17 +1535,16 @@ func test_validate_counter(
 		}
 	}
 	if !found {
-		return errors.New(fmt.Sprintf("Test Error: Metric name %s not found\n", name))
+		return fmt.Errorf("test Error: Metric name %s not found", name)
 	}
 
 	if valueExpected != valueActual {
-		return errors.New(fmt.Sprintf("Measurement: %s, expected %d, actual %d\n",
-			name, valueExpected, valueActual))
+		return fmt.Errorf("measurement: %s, expected %d, actual %d", name, valueExpected, valueActual)
 	}
 	return nil
 }
 
-func test_validate_gauge(
+func testValidateGauge(
 	name string,
 	valueExpected float64,
 	cache map[string]cachedgauge,
@@ -1591,12 +1566,101 @@ func test_validate_gauge(
 		}
 	}
 	if !found {
-		return errors.New(fmt.Sprintf("Test Error: Metric name %s not found\n", name))
+		return fmt.Errorf("test Error: Metric name %s not found", name)
 	}
 
 	if valueExpected != valueActual {
-		return errors.New(fmt.Sprintf("Measurement: %s, expected %f, actual %f\n",
-			name, valueExpected, valueActual))
+		return fmt.Errorf("Measurement: %s, expected %f, actual %f", name, valueExpected, valueActual)
 	}
 	return nil
+}
+
+func TestTCP(t *testing.T) {
+	statsd := Statsd{
+		Log:                    testutil.Logger{},
+		Protocol:               "tcp",
+		ServiceAddress:         "localhost:0",
+		AllowedPendingMessages: 10000,
+		MaxTCPConnections:      2,
+	}
+	var acc testutil.Accumulator
+	require.NoError(t, statsd.Start(&acc))
+	defer statsd.Stop()
+
+	addr := statsd.TCPlistener.Addr().String()
+
+	conn, err := net.Dial("tcp", addr)
+	_, err = conn.Write([]byte("cpu.time_idle:42|c\n"))
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	for {
+		require.NoError(t, statsd.Gather(&acc))
+
+		if len(acc.Metrics) > 0 {
+			break
+		}
+	}
+
+	testutil.RequireMetricsEqual(t,
+		[]telegraf.Metric{
+			testutil.MustMetric(
+				"cpu_time_idle",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 42,
+				},
+				time.Now(),
+				telegraf.Counter,
+			),
+		},
+		acc.GetTelegrafMetrics(),
+		testutil.IgnoreTime(),
+	)
+}
+
+func TestUdp(t *testing.T) {
+	statsd := Statsd{
+		Log:                    testutil.Logger{},
+		Protocol:               "udp",
+		ServiceAddress:         "localhost:14223",
+		AllowedPendingMessages: 250000,
+	}
+	var acc testutil.Accumulator
+	require.NoError(t, statsd.Start(&acc))
+	defer statsd.Stop()
+
+	conn, err := net.Dial("udp", "127.0.0.1:14223")
+	require.NoError(t, err)
+	_, err = conn.Write([]byte("cpu.time_idle:42|c\n"))
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	for {
+		require.NoError(t, statsd.Gather(&acc))
+
+		if len(acc.Metrics) > 0 {
+			break
+		}
+	}
+
+	testutil.RequireMetricsEqual(t,
+		[]telegraf.Metric{
+			testutil.MustMetric(
+				"cpu_time_idle",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 42,
+				},
+				time.Now(),
+				telegraf.Counter,
+			),
+		},
+		acc.GetTelegrafMetrics(),
+		testutil.IgnoreTime(),
+	)
 }

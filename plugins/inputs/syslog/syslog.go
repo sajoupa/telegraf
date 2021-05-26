@@ -7,18 +7,21 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
-	"github.com/influxdata/go-syslog"
-	"github.com/influxdata/go-syslog/nontransparent"
-	"github.com/influxdata/go-syslog/octetcounting"
-	"github.com/influxdata/go-syslog/rfc5424"
+	"github.com/influxdata/go-syslog/v2"
+	"github.com/influxdata/go-syslog/v2/nontransparent"
+	"github.com/influxdata/go-syslog/v2/octetcounting"
+	"github.com/influxdata/go-syslog/v2/rfc5424"
+
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
-	tlsConfig "github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/config"
+	framing "github.com/influxdata/telegraf/internal/syslog"
+	tlsConfig "github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
@@ -29,10 +32,10 @@ const ipMaxPacketSize = 64 * 1024
 type Syslog struct {
 	tlsConfig.ServerConfig
 	Address         string `toml:"server"`
-	KeepAlivePeriod *internal.Duration
+	KeepAlivePeriod *config.Duration
 	MaxConnections  int
-	ReadTimeout     *internal.Duration
-	Framing         Framing
+	ReadTimeout     *config.Duration
+	Framing         framing.Framing
 	Trailer         nontransparent.TrailerType
 	BestEffort      bool
 	Separator       string `toml:"sdparam_separator"`
@@ -83,10 +86,10 @@ var sampleConfig = `
   ## The framing technique with which it is expected that messages are transported (default = "octet-counting").
   ## Whether the messages come using the octect-counting (RFC5425#section-4.3.1, RFC6587#section-3.4.1),
   ## or the non-transparent framing technique (RFC6587#section-3.4.2).
-  ## Must be one of "octect-counting", "non-transparent".
+  ## Must be one of "octet-counting", "non-transparent".
   # framing = "octet-counting"
 
-  ## The trailer to be expected in case of non-trasparent framing (default = "LF").
+  ## The trailer to be expected in case of non-transparent framing (default = "LF").
   ## Must be one of "LF", or "NUL".
   # trailer = "LF"
 
@@ -138,6 +141,8 @@ func (s *Syslog) Start(acc telegraf.Accumulator) error {
 	}
 
 	if scheme == "unix" || scheme == "unixpacket" || scheme == "unixgram" {
+		// Accept success and failure in case the file does not exist
+		//nolint:errcheck,revive
 		os.Remove(s.Address)
 	}
 
@@ -180,6 +185,8 @@ func (s *Syslog) Stop() {
 	defer s.mu.Unlock()
 
 	if s.Closer != nil {
+		// Ignore the returned error as we cannot do anything about it anyway
+		//nolint:errcheck,revive
 		s.Close()
 	}
 	s.wg.Wait()
@@ -194,7 +201,10 @@ func getAddressParts(a string) (string, string, error) {
 		return "", "", fmt.Errorf("missing protocol within address '%s'", a)
 	}
 
-	u, _ := url.Parse(a)
+	u, err := url.Parse(filepath.ToSlash(a)) //convert backslashes to slashes (to make Windows path a valid URL)
+	if err != nil {
+		return "", "", fmt.Errorf("could not parse address '%s': %v", a, err)
+	}
 	switch u.Scheme {
 	case "unix", "unixpacket", "unixgram":
 		return parts[0], parts[1], nil
@@ -263,7 +273,9 @@ func (s *Syslog) listenStream(acc telegraf.Accumulator) {
 		s.connectionsMu.Lock()
 		if s.MaxConnections > 0 && len(s.connections) >= s.MaxConnections {
 			s.connectionsMu.Unlock()
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				acc.AddError(err)
+			}
 			continue
 		}
 		s.connections[conn.RemoteAddr().String()] = conn
@@ -278,7 +290,9 @@ func (s *Syslog) listenStream(acc telegraf.Accumulator) {
 
 	s.connectionsMu.Lock()
 	for _, c := range s.connections {
-		c.Close()
+		if err := c.Close(); err != nil {
+			acc.AddError(err)
+		}
 	}
 	s.connectionsMu.Unlock()
 }
@@ -292,6 +306,8 @@ func (s *Syslog) removeConnection(c net.Conn) {
 func (s *Syslog) handle(conn net.Conn, acc telegraf.Accumulator) {
 	defer func() {
 		s.removeConnection(conn)
+		// Ignore the returned error as we cannot do anything about it anyway
+		//nolint:errcheck,revive
 		conn.Close()
 	}()
 
@@ -299,8 +315,10 @@ func (s *Syslog) handle(conn net.Conn, acc telegraf.Accumulator) {
 
 	emit := func(r *syslog.Result) {
 		s.store(*r, acc)
-		if s.ReadTimeout != nil && s.ReadTimeout.Duration > 0 {
-			conn.SetReadDeadline(time.Now().Add(s.ReadTimeout.Duration))
+		if s.ReadTimeout != nil && time.Duration(*s.ReadTimeout) > 0 {
+			if err := conn.SetReadDeadline(time.Now().Add(time.Duration(*s.ReadTimeout))); err != nil {
+				acc.AddError(fmt.Errorf("setting read deadline failed: %v", err))
+			}
 		}
 	}
 
@@ -312,8 +330,8 @@ func (s *Syslog) handle(conn net.Conn, acc telegraf.Accumulator) {
 		opts = append(opts, syslog.WithBestEffort())
 	}
 
-	// Select the parser to use depeding on transport framing
-	if s.Framing == OctetCounting {
+	// Select the parser to use depending on transport framing
+	if s.Framing == framing.OctetCounting {
 		// Octet counting transparent framing
 		p = octetcounting.NewParser(opts...)
 	} else {
@@ -324,8 +342,10 @@ func (s *Syslog) handle(conn net.Conn, acc telegraf.Accumulator) {
 
 	p.Parse(conn)
 
-	if s.ReadTimeout != nil && s.ReadTimeout.Duration > 0 {
-		conn.SetReadDeadline(time.Now().Add(s.ReadTimeout.Duration))
+	if s.ReadTimeout != nil && time.Duration(*s.ReadTimeout) > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(time.Duration(*s.ReadTimeout))); err != nil {
+			acc.AddError(fmt.Errorf("setting read deadline failed: %v", err))
+		}
 	}
 }
 
@@ -334,13 +354,13 @@ func (s *Syslog) setKeepAlive(c *net.TCPConn) error {
 		return nil
 	}
 
-	if s.KeepAlivePeriod.Duration == 0 {
+	if *s.KeepAlivePeriod == 0 {
 		return c.SetKeepAlive(false)
 	}
 	if err := c.SetKeepAlive(true); err != nil {
 		return err
 	}
-	return c.SetKeepAlivePeriod(s.KeepAlivePeriod.Duration)
+	return c.SetKeepAlivePeriod(time.Duration(*s.KeepAlivePeriod))
 }
 
 func (s *Syslog) store(res syslog.Result, acc telegraf.Accumulator) {
@@ -420,7 +440,9 @@ type unixCloser struct {
 
 func (uc unixCloser) Close() error {
 	err := uc.closer.Close()
-	os.Remove(uc.path) // ignore error
+	// Accept success and failure in case the file does not exist
+	//nolint:errcheck,revive
+	os.Remove(uc.path)
 	return err
 }
 
@@ -438,16 +460,15 @@ func getNanoNow() time.Time {
 }
 
 func init() {
+	defaultTimeout := config.Duration(defaultReadTimeout)
 	inputs.Add("syslog", func() telegraf.Input {
 		return &Syslog{
-			Address: ":6514",
-			now:     getNanoNow,
-			ReadTimeout: &internal.Duration{
-				Duration: defaultReadTimeout,
-			},
-			Framing:   OctetCounting,
-			Trailer:   nontransparent.LF,
-			Separator: "_",
+			Address:     ":6514",
+			now:         getNanoNow,
+			ReadTimeout: &defaultTimeout,
+			Framing:     framing.OctetCounting,
+			Trailer:     nontransparent.LF,
+			Separator:   "_",
 		}
 	})
 }

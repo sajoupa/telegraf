@@ -20,7 +20,7 @@ type NetIOStats struct {
 	Interfaces          []string
 }
 
-func (_ *NetIOStats) Description() string {
+func (n *NetIOStats) Description() string {
 	return "Read metrics about network interface usage"
 }
 
@@ -38,36 +38,45 @@ var netSampleConfig = `
   ##
 `
 
-func (_ *NetIOStats) SampleConfig() string {
+func (n *NetIOStats) SampleConfig() string {
 	return netSampleConfig
 }
 
-func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
-	netio, err := s.ps.NetIO()
+func (n *NetIOStats) Gather(acc telegraf.Accumulator) error {
+	netio, err := n.ps.NetIO()
 	if err != nil {
 		return fmt.Errorf("error getting net io info: %s", err)
 	}
 
-	if s.filter == nil {
-		if s.filter, err = filter.Compile(s.Interfaces); err != nil {
+	if n.filter == nil {
+		if n.filter, err = filter.Compile(n.Interfaces); err != nil {
 			return fmt.Errorf("error compiling filter: %s", err)
 		}
 	}
 
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return fmt.Errorf("error getting list of interfaces: %s", err)
+	}
+	interfacesByName := map[string]net.Interface{}
+	for _, iface := range interfaces {
+		interfacesByName[iface.Name] = iface
+	}
+
 	for _, io := range netio {
-		if len(s.Interfaces) != 0 {
+		if len(n.Interfaces) != 0 {
 			var found bool
 
-			if s.filter.Match(io.Name) {
+			if n.filter.Match(io.Name) {
 				found = true
 			}
 
 			if !found {
 				continue
 			}
-		} else if !s.skipChecks {
-			iface, err := net.InterfaceByName(io.Name)
-			if err != nil {
+		} else if !n.skipChecks {
+			iface, ok := interfacesByName[io.Name]
+			if !ok {
 				continue
 			}
 
@@ -99,8 +108,8 @@ func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 
 	// Get system wide stats for different network protocols
 	// (ignore these stats if the call fails)
-	if !s.IgnoreProtocolStats {
-		netprotos, _ := s.ps.NetProto()
+	if !n.IgnoreProtocolStats {
+		netprotos, _ := n.ps.NetProto()
 		fields := make(map[string]interface{})
 		for _, proto := range netprotos {
 			for stat, value := range proto.Stats {

@@ -54,6 +54,15 @@ and creates metrics using one of the supported [input data formats][].
   ## https://github.com/influxdata/telegraf/blob/master/docs/DATA_FORMATS_INPUT.md
   data_format = "influx"
 
+  ##
+  ## The content encoding of the data from kinesis
+  ## If you are processing a cloudwatch logs kinesis stream then set this to "gzip"
+  ## as AWS compresses cloudwatch log data before it is sent to kinesis (aws
+  ## also base64 encodes the zip byte data before pushing to the stream.  The base64 decoding
+  ## is done automatically by the golang sdk, as data is read from kinesis)
+  ##
+  # content_encoding = "identity"
+
   ## Optional
   ## Configuration for a dynamodb checkpoint
   [inputs.kinesis_consumer.checkpoint_dynamodb]
@@ -78,7 +87,7 @@ DynamoDB:
 #### DynamoDB Checkpoint
 
 The DynamoDB checkpoint stores the last processed record in a DynamoDB. To leverage
-this functionality, create a table with the folowing string type keys:
+this functionality, create a table with the following string type keys:
 
 ```
 Partition key: namespace

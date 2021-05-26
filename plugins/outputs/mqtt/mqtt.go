@@ -2,14 +2,16 @@ package mqtt
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal"
-	"github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/outputs"
 	"github.com/influxdata/telegraf/plugins/serializers"
 )
@@ -65,7 +67,7 @@ type MQTT struct {
 	Username    string
 	Password    string
 	Database    string
-	Timeout     internal.Duration
+	Timeout     config.Duration
 	TopicPrefix string
 	QoS         int    `toml:"qos"`
 	ClientID    string `toml:"client_id"`
@@ -150,9 +152,9 @@ func (m *MQTT) Write(metrics []telegraf.Metric) error {
 			metricsmap[topic] = append(metricsmap[topic], metric)
 		} else {
 			buf, err := m.serializer.Serialize(metric)
-
 			if err != nil {
-				return err
+				log.Printf("D! [outputs.mqtt] Could not serialize metric: %v", err)
+				continue
 			}
 
 			err = m.publish(topic, buf)
@@ -179,7 +181,7 @@ func (m *MQTT) Write(metrics []telegraf.Metric) error {
 
 func (m *MQTT) publish(topic string, body []byte) error {
 	token := m.client.Publish(topic, byte(m.QoS), m.Retain, body)
-	token.WaitTimeout(m.Timeout.Duration)
+	token.WaitTimeout(time.Duration(m.Timeout))
 	if token.Error() != nil {
 		return token.Error()
 	}
@@ -190,10 +192,10 @@ func (m *MQTT) createOpts() (*paho.ClientOptions, error) {
 	opts := paho.NewClientOptions()
 	opts.KeepAlive = 0
 
-	if m.Timeout.Duration < time.Second {
-		m.Timeout.Duration = 5 * time.Second
+	if m.Timeout < config.Duration(time.Second) {
+		m.Timeout = config.Duration(5 * time.Second)
 	}
-	opts.WriteTimeout = m.Timeout.Duration
+	opts.WriteTimeout = time.Duration(m.Timeout)
 
 	if m.ClientID != "" {
 		opts.SetClientID(m.ClientID)
@@ -222,7 +224,7 @@ func (m *MQTT) createOpts() (*paho.ClientOptions, error) {
 	}
 
 	if len(m.Servers) == 0 {
-		return opts, fmt.Errorf("could not get host infomations")
+		return opts, fmt.Errorf("could not get host informations")
 	}
 	for _, host := range m.Servers {
 		server := fmt.Sprintf("%s://%s", scheme, host)

@@ -2,17 +2,15 @@ package amqp
 
 import (
 	"bytes"
-	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal"
-	"github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/outputs"
 	"github.com/influxdata/telegraf/plugins/serializers"
-
 	"github.com/streadway/amqp"
 )
 
@@ -31,7 +29,7 @@ func (a *externalAuth) Mechanism() string {
 }
 
 func (a *externalAuth) Response() string {
-	return fmt.Sprintf("\000")
+	return "\000"
 }
 
 type AMQP struct {
@@ -53,8 +51,10 @@ type AMQP struct {
 	RetentionPolicy    string            `toml:"retention_policy"` // deprecated in 1.7; use headers
 	Precision          string            `toml:"precision"`        // deprecated; has no effect
 	Headers            map[string]string `toml:"headers"`
-	Timeout            internal.Duration `toml:"timeout"`
+	Timeout            config.Duration   `toml:"timeout"`
 	UseBatchFormat     bool              `toml:"use_batch_format"`
+	ContentEncoding    string            `toml:"content_encoding"`
+	Log                telegraf.Logger   `toml:"-"`
 	tls.ClientConfig
 
 	serializer   serializers.Serializer
@@ -62,6 +62,7 @@ type AMQP struct {
 	client       Client
 	config       *ClientConfig
 	sentMessages int
+	encoder      internal.ContentEncoder
 }
 
 type Client interface {
@@ -91,14 +92,14 @@ var sampleConfig = `
   # exchange_type = "topic"
 
   ## If true, exchange will be passively declared.
-  # exchange_declare_passive = false
+  # exchange_passive = false
 
   ## Exchange durability can be either "transient" or "durable".
   # exchange_durability = "durable"
 
   ## Additional exchange arguments.
   # exchange_arguments = { }
-  # exchange_arguments = {"hash_propery" = "timestamp"}
+  # exchange_arguments = {"hash_property" = "timestamp"}
 
   ## Authentication credentials for the PLAIN auth_method.
   # username = ""
@@ -150,6 +151,14 @@ var sampleConfig = `
   ## Recommended to set to true.
   # use_batch_format = false
 
+  ## Content encoding for message payloads, can be set to "gzip" to or
+  ## "identity" to apply no encoding.
+  ##
+  ## Please note that when use_batch_format = false each amqp message contains only
+  ## a single metric, it is recommended to use compression with batch format
+  ## for best results.
+  # content_encoding = "identity"
+
   ## Data format to output.
   ## Each data format has its own unique set of configuration options, read
   ## more about them here:
@@ -178,11 +187,16 @@ func (q *AMQP) Connect() error {
 		q.config = config
 	}
 
-	client, err := q.connect(q.config)
+	var err error
+	q.encoder, err = internal.NewContentEncoder(q.ContentEncoding)
 	if err != nil {
 		return err
 	}
-	q.client = client
+
+	q.client, err = q.connect(q.config)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -206,8 +220,8 @@ func (q *AMQP) routingKey(metric telegraf.Metric) string {
 
 func (q *AMQP) Write(metrics []telegraf.Metric) error {
 	batches := make(map[string][]telegraf.Metric)
-	if q.ExchangeType == "direct" || q.ExchangeType == "header" {
-		// Since the routing_key is ignored for these exchange types send as a
+	if q.ExchangeType == "header" {
+		// Since the routing_key is ignored for this exchange type send as a
 		// single batch.
 		batches[""] = metrics
 	} else {
@@ -224,6 +238,11 @@ func (q *AMQP) Write(metrics []telegraf.Metric) error {
 	first := true
 	for key, metrics := range batches {
 		body, err := q.serialize(metrics)
+		if err != nil {
+			return err
+		}
+
+		body, err = q.encoder.Encode(body)
 		if err != nil {
 			return err
 		}
@@ -248,7 +267,7 @@ func (q *AMQP) Write(metrics []telegraf.Metric) error {
 	}
 
 	if q.sentMessages >= q.MaxMessages && q.MaxMessages > 0 {
-		log.Printf("D! Output [amqp] sent MaxMessages; closing connection")
+		q.Log.Debug("Sent MaxMessages; closing connection")
 		q.client.Close()
 		q.client = nil
 	}
@@ -277,21 +296,22 @@ func (q *AMQP) publish(key string, body []byte) error {
 func (q *AMQP) serialize(metrics []telegraf.Metric) ([]byte, error) {
 	if q.UseBatchFormat {
 		return q.serializer.SerializeBatch(metrics)
-	} else {
-		var buf bytes.Buffer
-		for _, metric := range metrics {
-			octets, err := q.serializer.Serialize(metric)
-			if err != nil {
-				return nil, err
-			}
-			_, err = buf.Write(octets)
-			if err != nil {
-				return nil, err
-			}
-		}
-		body := buf.Bytes()
-		return body, nil
 	}
+
+	var buf bytes.Buffer
+	for _, metric := range metrics {
+		octets, err := q.serializer.Serialize(metric)
+		if err != nil {
+			q.Log.Debugf("Could not serialize metric: %v", err)
+			continue
+		}
+		_, err = buf.Write(octets)
+		if err != nil {
+			return nil, err
+		}
+	}
+	body := buf.Bytes()
+	return body, nil
 }
 
 func (q *AMQP) makeClientConfig() (*ClientConfig, error) {
@@ -299,7 +319,8 @@ func (q *AMQP) makeClientConfig() (*ClientConfig, error) {
 		exchange:        q.Exchange,
 		exchangeType:    q.ExchangeType,
 		exchangePassive: q.ExchangePassive,
-		timeout:         q.Timeout.Duration,
+		encoding:        q.ContentEncoding,
+		timeout:         time.Duration(q.Timeout),
 	}
 
 	switch q.ExchangeDurability {
@@ -377,7 +398,7 @@ func init() {
 			AuthMethod:      DefaultAuthMethod,
 			Database:        DefaultDatabase,
 			RetentionPolicy: DefaultRetentionPolicy,
-			Timeout:         internal.Duration{Duration: time.Second * 5},
+			Timeout:         config.Duration(time.Second * 5),
 			connect:         connect,
 		}
 	})

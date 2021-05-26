@@ -1,6 +1,8 @@
 package hddtemp
 
 import (
+	"net"
+
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/inputs"
 	gohddtemp "github.com/influxdata/telegraf/plugins/inputs/hddtemp/go-hddtemp"
@@ -18,7 +20,7 @@ type Fetcher interface {
 	Fetch(address string) ([]gohddtemp.Disk, error)
 }
 
-func (_ *HDDTemp) Description() string {
+func (h *HDDTemp) Description() string {
 	return "Monitor disks' temperatures using hddtemp"
 }
 
@@ -34,7 +36,7 @@ var hddtempSampleConfig = `
   # devices = ["sda", "*"]
 `
 
-func (_ *HDDTemp) SampleConfig() string {
+func (h *HDDTemp) SampleConfig() string {
 	return hddtempSampleConfig
 }
 
@@ -42,8 +44,12 @@ func (h *HDDTemp) Gather(acc telegraf.Accumulator) error {
 	if h.fetcher == nil {
 		h.fetcher = gohddtemp.New()
 	}
-	disks, err := h.fetcher.Fetch(h.Address)
+	source, _, err := net.SplitHostPort(h.Address)
+	if err != nil {
+		source = h.Address
+	}
 
+	disks, err := h.fetcher.Fetch(h.Address)
 	if err != nil {
 		return err
 	}
@@ -56,6 +62,7 @@ func (h *HDDTemp) Gather(acc telegraf.Accumulator) error {
 					"model":  disk.Model,
 					"unit":   disk.Unit,
 					"status": disk.Status,
+					"source": source,
 				}
 
 				fields := map[string]interface{}{

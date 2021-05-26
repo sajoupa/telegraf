@@ -1,7 +1,6 @@
 package dns_query
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -22,7 +21,7 @@ const (
 	Error              = 2
 )
 
-type DnsQuery struct {
+type DNSQuery struct {
 	// Domains or subdomains to query
 	Domains []string
 
@@ -53,7 +52,7 @@ var sampleConfig = `
   # domains = ["."]
 
   ## Query record type.
-  ## Posible values: A, AAAA, CNAME, MX, NS, PTR, TXT, SOA, SPF, SRV.
+  ## Possible values: A, AAAA, CNAME, MX, NS, PTR, TXT, SOA, SPF, SRV.
   # record_type = "A"
 
   ## Dns server port.
@@ -63,14 +62,14 @@ var sampleConfig = `
   # timeout = 2
 `
 
-func (d *DnsQuery) SampleConfig() string {
+func (d *DNSQuery) SampleConfig() string {
 	return sampleConfig
 }
 
-func (d *DnsQuery) Description() string {
+func (d *DNSQuery) Description() string {
 	return "Query given DNS server and gives statistics"
 }
-func (d *DnsQuery) Gather(acc telegraf.Accumulator) error {
+func (d *DNSQuery) Gather(acc telegraf.Accumulator) error {
 	var wg sync.WaitGroup
 	d.setDefaultValues()
 
@@ -85,7 +84,7 @@ func (d *DnsQuery) Gather(acc telegraf.Accumulator) error {
 					"record_type": d.RecordType,
 				}
 
-				dnsQueryTime, rcode, err := d.getDnsQueryTime(domain, server)
+				dnsQueryTime, rcode, err := d.getDNSQueryTime(domain, server)
 				if rcode >= 0 {
 					tags["rcode"] = dns.RcodeToString[rcode]
 					fields["rcode_value"] = rcode
@@ -111,7 +110,7 @@ func (d *DnsQuery) Gather(acc telegraf.Accumulator) error {
 	return nil
 }
 
-func (d *DnsQuery) setDefaultValues() {
+func (d *DNSQuery) setDefaultValues() {
 	if d.Network == "" {
 		d.Network = "udp"
 	}
@@ -134,7 +133,7 @@ func (d *DnsQuery) setDefaultValues() {
 	}
 }
 
-func (d *DnsQuery) getDnsQueryTime(domain string, server string) (float64, int, error) {
+func (d *DNSQuery) getDNSQueryTime(domain string, server string) (float64, int, error) {
 	dnsQueryTime := float64(0)
 
 	c := new(dns.Client)
@@ -160,9 +159,9 @@ func (d *DnsQuery) getDnsQueryTime(domain string, server string) (float64, int, 
 	return dnsQueryTime, r.Rcode, nil
 }
 
-func (d *DnsQuery) parseRecordType() (uint16, error) {
+func (d *DNSQuery) parseRecordType() (uint16, error) {
 	var recordType uint16
-	var error error
+	var err error
 
 	switch d.RecordType {
 	case "A":
@@ -188,10 +187,10 @@ func (d *DnsQuery) parseRecordType() (uint16, error) {
 	case "TXT":
 		recordType = dns.TypeTXT
 	default:
-		error = errors.New(fmt.Sprintf("Record type %s not recognized", d.RecordType))
+		err = fmt.Errorf("Record type %s not recognized", d.RecordType)
 	}
 
-	return recordType, error
+	return recordType, err
 }
 
 func setResult(result ResultType, fields map[string]interface{}, tags map[string]string) {
@@ -211,6 +210,6 @@ func setResult(result ResultType, fields map[string]interface{}, tags map[string
 
 func init() {
 	inputs.Add("dns_query", func() telegraf.Input {
-		return &DnsQuery{}
+		return &DNSQuery{}
 	})
 }

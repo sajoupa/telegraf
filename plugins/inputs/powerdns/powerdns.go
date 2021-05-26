@@ -56,14 +56,16 @@ func (p *Powerdns) gatherServer(address string, acc telegraf.Accumulator) error 
 
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(defaultTimeout))
+	if err := conn.SetDeadline(time.Now().Add(defaultTimeout)); err != nil {
+		return err
+	}
 
 	// Read and write buffer
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
 	// Send command
 	if _, err := fmt.Fprint(conn, "show * \n"); err != nil {
-		return nil
+		return err
 	}
 	if err := rw.Flush(); err != nil {
 		return err
@@ -110,8 +112,8 @@ func parseResponse(metrics string) map[string]interface{} {
 
 		i, err := strconv.ParseInt(m[1], 10, 64)
 		if err != nil {
-			log.Printf("E! powerdns: Error parsing integer for metric [%s]: %s",
-				metric, err)
+			log.Printf("E! [inputs.powerdns] error parsing integer for metric %q: %s",
+				metric, err.Error())
 			continue
 		}
 		values[m[0]] = i

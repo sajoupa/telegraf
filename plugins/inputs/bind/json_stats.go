@@ -16,6 +16,8 @@ import (
 type jsonStats struct {
 	OpCodes   map[string]int
 	QTypes    map[string]int
+	RCodes    map[string]int
+	ZoneStats map[string]int
 	NSStats   map[string]int
 	SockStats map[string]int
 	Views     map[string]jsonView
@@ -23,16 +25,16 @@ type jsonStats struct {
 }
 
 type jsonMemory struct {
-	TotalUse    int
-	InUse       int
-	BlockSize   int
-	ContextSize int
-	Lost        int
+	TotalUse    int64
+	InUse       int64
+	BlockSize   int64
+	ContextSize int64
+	Lost        int64
 	Contexts    []struct {
-		Id    string
+		ID    string
 		Name  string
-		Total int
-		InUse int
+		Total int64
+		InUse int64
 	}
 }
 
@@ -56,12 +58,14 @@ func addJSONCounter(acc telegraf.Accumulator, commonTags map[string]string, stat
 			tags[k] = v
 		}
 
-		grouper.Add("bind_counter", tags, ts, name, value)
+		if err := grouper.Add("bind_counter", tags, ts, name, value); err != nil {
+			acc.AddError(fmt.Errorf("adding field %q to group failed: %v", name, err))
+		}
 	}
 
 	//Add grouped metrics
-	for _, metric := range grouper.Metrics() {
-		acc.AddMetric(metric)
+	for _, groupedMetric := range grouper.Metrics() {
+		acc.AddMetric(groupedMetric)
 	}
 }
 
@@ -78,6 +82,10 @@ func (b *Bind) addStatsJSON(stats jsonStats, acc telegraf.Accumulator, urlTag st
 	tags["type"] = "opcode"
 	addJSONCounter(acc, tags, stats.OpCodes)
 
+	// RCodes stats
+	tags["type"] = "rcode"
+	addJSONCounter(acc, tags, stats.RCodes)
+
 	// Query RDATA types
 	tags["type"] = "qtype"
 	addJSONCounter(acc, tags, stats.QTypes)
@@ -89,6 +97,10 @@ func (b *Bind) addStatsJSON(stats jsonStats, acc telegraf.Accumulator, urlTag st
 	// Socket statistics
 	tags["type"] = "sockstat"
 	addJSONCounter(acc, tags, stats.SockStats)
+
+	// Zonestats
+	tags["type"] = "zonestat"
+	addJSONCounter(acc, tags, stats.ZoneStats)
 
 	// Memory stats
 	fields := map[string]interface{}{
@@ -103,7 +115,7 @@ func (b *Bind) addStatsJSON(stats jsonStats, acc telegraf.Accumulator, urlTag st
 	// Detailed, per-context memory stats
 	if b.GatherMemoryContexts {
 		for _, c := range stats.Memory.Contexts {
-			tags := map[string]string{"url": urlTag, "id": c.Id, "name": c.Name, "source": host, "port": port}
+			tags := map[string]string{"url": urlTag, "id": c.ID, "name": c.Name, "source": host, "port": port}
 			fields := map[string]interface{}{"total": c.Total, "in_use": c.InUse}
 
 			acc.AddGauge("bind_memory_context", fields, tags)
@@ -123,15 +135,17 @@ func (b *Bind) addStatsJSON(stats jsonStats, acc telegraf.Accumulator, urlTag st
 						"type":   cntrType,
 					}
 
-					grouper.Add("bind_counter", tags, ts, cntrName, value)
+					if err := grouper.Add("bind_counter", tags, ts, cntrName, value); err != nil {
+						acc.AddError(fmt.Errorf("adding tags %q to group failed: %v", tags, err))
+					}
 				}
 			}
 		}
 	}
 
 	//Add grouped metrics
-	for _, metric := range grouper.Metrics() {
-		acc.AddMetric(metric)
+	for _, groupedMetric := range grouper.Metrics() {
+		acc.AddMetric(groupedMetric)
 	}
 }
 
@@ -143,21 +157,29 @@ func (b *Bind) readStatsJSON(addr *url.URL, acc telegraf.Accumulator) error {
 
 	// Progressively build up full jsonStats struct by parsing the individual HTTP responses
 	for _, suffix := range [...]string{"/server", "/net", "/mem"} {
-		scrapeUrl := addr.String() + suffix
+		err := func() error {
+			scrapeURL := addr.String() + suffix
 
-		resp, err := client.Get(scrapeUrl)
+			resp, err := b.client.Get(scrapeURL)
+			if err != nil {
+				return err
+			}
+
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("%s returned HTTP status: %s", scrapeURL, resp.Status)
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+				return fmt.Errorf("unable to decode JSON blob: %s", err)
+			}
+
+			return nil
+		}()
+
 		if err != nil {
 			return err
-		}
-
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("%s returned HTTP status: %s", scrapeUrl, resp.Status)
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
-			return fmt.Errorf("Unable to decode JSON blob: %s", err)
 		}
 	}
 

@@ -7,7 +7,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
@@ -34,7 +34,7 @@ type Sysstat struct {
 	Sadc string `toml:"sadc_path"`
 
 	// Force the execution time of sadc
-	SadcInterval internal.Duration `toml:"sadc_interval"`
+	SadcInterval config.Duration `toml:"sadc_interval"`
 
 	// Sadf represents the path to the sadf cmd.
 	Sadf string `toml:"sadf_path"`
@@ -67,6 +67,8 @@ type Sysstat struct {
 	DeviceTags map[string][]map[string]string `toml:"device_tags"`
 	tmpFile    string
 	interval   int
+
+	Log telegraf.Logger
 }
 
 func (*Sysstat) Description() string {
@@ -81,18 +83,15 @@ var sampleConfig = `
   ##   Arch:          /usr/lib/sa/sadc
   ##   RHEL/CentOS:   /usr/lib64/sa/sadc
   sadc_path = "/usr/lib/sa/sadc" # required
-  #
-  #
+
   ## Path to the sadf command, if it is not in PATH
   # sadf_path = "/usr/bin/sadf"
-  #
-  #
+
   ## Activities is a list of activities, that are passed as argument to the
   ## sadc collector utility (e.g: DISK, SNMP etc...)
   ## The more activities that are added, the more data is collected.
   # activities = ["DISK"]
-  #
-  #
+
   ## Group metrics to measurements.
   ##
   ## If group is false each metric will be prefixed with a description
@@ -100,8 +99,7 @@ var sampleConfig = `
   ##
   ## If Group is true, corresponding metrics are grouped to a single measurement.
   # group = true
-  #
-  #
+
   ## Options for the sadf command. The values on the left represent the sadf
   ## options and the values on the right their description (which are used for
   ## grouping and prefixing metrics).
@@ -125,8 +123,7 @@ var sampleConfig = `
     -w = "task"
   #  -H = "hugepages"        # only available for newer linux distributions
   #  "-I ALL" = "interrupts" # requires INT activity
-  #
-  #
+
   ## Device tags can be used to add additional tags for devices.
   ## For example the configuration below adds a tag vg with value rootvg for
   ## all metrics with sda devices.
@@ -139,9 +136,9 @@ func (*Sysstat) SampleConfig() string {
 }
 
 func (s *Sysstat) Gather(acc telegraf.Accumulator) error {
-	if s.SadcInterval.Duration != 0 {
+	if time.Duration(s.SadcInterval) != 0 {
 		// Collect interval is calculated as interval - parseInterval
-		s.interval = int(s.SadcInterval.Duration.Seconds()) + parseInterval
+		s.interval = int(time.Duration(s.SadcInterval).Seconds()) + parseInterval
 	}
 
 	if s.interval == 0 {
@@ -196,7 +193,7 @@ func (s *Sysstat) collect() error {
 	out, err := internal.CombinedOutputTimeout(cmd, time.Second*time.Duration(collectInterval+parseInterval))
 	if err != nil {
 		if err := os.Remove(s.tmpFile); err != nil {
-			log.Printf("E! failed to remove tmp file after %s command: %s", strings.Join(cmd.Args, " "), err)
+			s.Log.Errorf("Failed to remove tmp file after %q command: %s", strings.Join(cmd.Args, " "), err.Error())
 		}
 		return fmt.Errorf("failed to run command %s: %s - %s", strings.Join(cmd.Args, " "), err, string(out))
 	}
@@ -277,7 +274,6 @@ func (s *Sysstat) parse(acc telegraf.Accumulator, option string, ts time.Time) e
 						tags[k] = v
 					}
 				}
-
 			}
 		}
 
@@ -289,7 +285,7 @@ func (s *Sysstat) parse(acc telegraf.Accumulator, option string, ts time.Time) e
 					tags:   make(map[string]string),
 				}
 			}
-			g, _ := m[device]
+			g := m[device]
 			if len(g.tags) == 0 {
 				for k, v := range tags {
 					g.tags[k] = v
@@ -303,7 +299,6 @@ func (s *Sysstat) parse(acc telegraf.Accumulator, option string, ts time.Time) e
 			}
 			acc.AddFields(measurement, fields, tags, ts)
 		}
-
 	}
 	if s.Group {
 		for _, v := range m {
@@ -335,6 +330,7 @@ func (s *Sysstat) sadfOptions(activityOption string) []string {
 // escape removes % and / chars in field names
 func escape(dirty string) string {
 	var fieldEscaper = strings.NewReplacer(
+		`%%`, "pct_",
 		`%`, "pct_",
 		`/`, "_per_",
 	)

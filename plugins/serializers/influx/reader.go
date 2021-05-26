@@ -50,15 +50,16 @@ func (r *reader) Read(p []byte) (int, error) {
 
 	for _, metric := range r.metrics[r.offset:] {
 		_, err := r.serializer.Write(r.buf, metric)
-		r.offset += 1
+		r.offset++
 		if err != nil {
 			r.buf.Reset()
-			if err != nil {
-				// Since we are serializing multiple metrics, don't fail the
-				// the entire batch just because of one unserializable metric.
-				log.Printf("E! [serializers.influx] could not serialize metric: %v; discarding metric", err)
+			if _, ok := err.(*MetricError); ok {
 				continue
 			}
+			// Since we are serializing multiple metrics, don't fail the
+			// the entire batch just because of one unserializable metric.
+			log.Printf("E! [serializers.influx] could not serialize metric: %v; discarding metric", err)
+			continue
 		}
 		break
 	}

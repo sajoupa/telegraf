@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"github.com/influxdata/telegraf/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 var s = Sysstat{
+	Log:        testutil.Logger{},
 	interval:   10,
 	Sadc:       "/usr/lib/sa/sadc",
 	Sadf:       "/usr/bin/sadf",
@@ -226,6 +228,10 @@ func TestEscape(t *testing.T) {
 			"pct_util",
 		},
 		{
+			"%%util",
+			"pct_util",
+		},
+		{
 			"bread/s",
 			"bread_per_s",
 		},
@@ -298,7 +304,8 @@ dell-xps	5	2016-03-25 16:18:10 UTC	sdb	%util	0.30
 
 	switch path.Base(cmd) {
 	case "sadf":
-		fmt.Fprint(os.Stdout, mockData[args[3]])
+		_, err := fmt.Fprint(os.Stdout, mockData[args[3]])
+		require.NoError(t, err)
 	default:
 	}
 	// some code here to check arguments perhaps?

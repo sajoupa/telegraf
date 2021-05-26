@@ -3,7 +3,6 @@ package stackdriver
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -14,7 +13,7 @@ import (
 	googlepbduration "github.com/golang/protobuf/ptypes/duration"
 	googlepbts "github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal/limiter"
 	"github.com/influxdata/telegraf/metric"
 	"github.com/influxdata/telegraf/plugins/inputs" // Imports the Stackdriver Monitoring client package.
@@ -109,9 +108,9 @@ const (
 )
 
 var (
-	defaultCacheTTL = internal.Duration{Duration: 1 * time.Hour}
-	defaultWindow   = internal.Duration{Duration: 1 * time.Minute}
-	defaultDelay    = internal.Duration{Duration: 5 * time.Minute}
+	defaultCacheTTL = config.Duration(1 * time.Hour)
+	defaultWindow   = config.Duration(1 * time.Minute)
+	defaultDelay    = config.Duration(5 * time.Minute)
 )
 
 type (
@@ -119,14 +118,16 @@ type (
 	Stackdriver struct {
 		Project                         string                `toml:"project"`
 		RateLimit                       int                   `toml:"rate_limit"`
-		Window                          internal.Duration     `toml:"window"`
-		Delay                           internal.Duration     `toml:"delay"`
-		CacheTTL                        internal.Duration     `toml:"cache_ttl"`
+		Window                          config.Duration       `toml:"window"`
+		Delay                           config.Duration       `toml:"delay"`
+		CacheTTL                        config.Duration       `toml:"cache_ttl"`
 		MetricTypePrefixInclude         []string              `toml:"metric_type_prefix_include"`
 		MetricTypePrefixExclude         []string              `toml:"metric_type_prefix_exclude"`
 		GatherRawDistributionBuckets    bool                  `toml:"gather_raw_distribution_buckets"`
 		DistributionAggregationAligners []string              `toml:"distribution_aggregation_aligners"`
 		Filter                          *ListTimeSeriesFilter `toml:"filter"`
+
+		Log telegraf.Logger
 
 		client              metricClient
 		timeSeriesConfCache *timeSeriesConfCache
@@ -167,6 +168,7 @@ type (
 
 	// stackdriverMetricClient is a metric client for stackdriver
 	stackdriverMetricClient struct {
+		log  telegraf.Logger
 		conn *monitoring.MetricClient
 
 		listMetricDescriptorsCalls selfstat.Stat
@@ -199,24 +201,24 @@ func (g *lockedSeriesGrouper) Add(
 }
 
 // ListMetricDescriptors implements metricClient interface
-func (c *stackdriverMetricClient) ListMetricDescriptors(
+func (smc *stackdriverMetricClient) ListMetricDescriptors(
 	ctx context.Context,
 	req *monitoringpb.ListMetricDescriptorsRequest,
 ) (<-chan *metricpb.MetricDescriptor, error) {
 	mdChan := make(chan *metricpb.MetricDescriptor, 1000)
 
 	go func() {
-		log.Printf("D! [inputs.stackdriver] ListMetricDescriptors: %s", req.Filter)
+		smc.log.Debugf("List metric descriptor request filter: %s", req.Filter)
 		defer close(mdChan)
 
 		// Iterate over metric descriptors and send them to buffered channel
-		mdResp := c.conn.ListMetricDescriptors(ctx, req)
-		c.listMetricDescriptorsCalls.Incr(1)
+		mdResp := smc.conn.ListMetricDescriptors(ctx, req)
+		smc.listMetricDescriptorsCalls.Incr(1)
 		for {
 			mdDesc, mdErr := mdResp.Next()
 			if mdErr != nil {
 				if mdErr != iterator.Done {
-					log.Printf("E! [inputs.stackdriver] Received error response: %s: %v", req, mdErr)
+					smc.log.Errorf("Failed iterating metric descriptor responses: %q: %v", req.String(), mdErr)
 				}
 				break
 			}
@@ -228,24 +230,24 @@ func (c *stackdriverMetricClient) ListMetricDescriptors(
 }
 
 // ListTimeSeries implements metricClient interface
-func (c *stackdriverMetricClient) ListTimeSeries(
+func (smc *stackdriverMetricClient) ListTimeSeries(
 	ctx context.Context,
 	req *monitoringpb.ListTimeSeriesRequest,
 ) (<-chan *monitoringpb.TimeSeries, error) {
 	tsChan := make(chan *monitoringpb.TimeSeries, 1000)
 
 	go func() {
-		log.Printf("D! [inputs.stackdriver] ListTimeSeries: %s", req.Filter)
+		smc.log.Debugf("List time series request filter: %s", req.Filter)
 		defer close(tsChan)
 
 		// Iterate over timeseries and send them to buffered channel
-		tsResp := c.conn.ListTimeSeries(ctx, req)
-		c.listTimeSeriesCalls.Incr(1)
+		tsResp := smc.conn.ListTimeSeries(ctx, req)
+		smc.listTimeSeriesCalls.Incr(1)
 		for {
 			tsDesc, tsErr := tsResp.Next()
 			if tsErr != nil {
 				if tsErr != iterator.Done {
-					log.Printf("E! [inputs.stackdriver] Received error response: %s: %v", req, tsErr)
+					smc.log.Errorf("Failed iterating time series responses: %q: %v", req.String(), tsErr)
 				}
 				break
 			}
@@ -257,8 +259,8 @@ func (c *stackdriverMetricClient) ListTimeSeries(
 }
 
 // Close implements metricClient interface
-func (s *stackdriverMetricClient) Close() error {
-	return s.conn.Close()
+func (smc *stackdriverMetricClient) Close() error {
+	return smc.conn.Close()
 }
 
 // Description implements telegraf.Input interface
@@ -320,14 +322,14 @@ func (s *Stackdriver) Gather(acc telegraf.Accumulator) error {
 // Returns the start and end time for the next collection.
 func (s *Stackdriver) updateWindow(prevEnd time.Time) (time.Time, time.Time) {
 	var start time.Time
-	if s.Window.Duration != 0 {
-		start = time.Now().Add(-s.Delay.Duration).Add(-s.Window.Duration)
+	if time.Duration(s.Window) != 0 {
+		start = time.Now().Add(-time.Duration(s.Delay)).Add(-time.Duration(s.Window))
 	} else if prevEnd.IsZero() {
-		start = time.Now().Add(-s.Delay.Duration).Add(-defaultWindow.Duration)
+		start = time.Now().Add(-time.Duration(s.Delay)).Add(-time.Duration(defaultWindow))
 	} else {
 		start = prevEnd
 	}
-	end := time.Now().Add(-s.Delay.Duration)
+	end := time.Now().Add(-time.Duration(s.Delay))
 	return start, end
 }
 
@@ -458,6 +460,7 @@ func (s *Stackdriver) initializeStackdriverClient(ctx context.Context) error {
 			"stackdriver", "list_timeseries_calls", tags)
 
 		s.client = &stackdriverMetricClient{
+			log:                        s.Log,
 			conn:                       client,
 			listMetricDescriptorsCalls: listMetricDescriptorsCalls,
 			listTimeSeriesCalls:        listTimeSeriesCalls,
@@ -541,7 +544,7 @@ func (s *Stackdriver) generatetimeSeriesConfs(
 	for _, filter := range filters {
 		// Add filter for list metric descriptors if
 		// includeMetricTypePrefixes is specified,
-		// this is more effecient than iterating over
+		// this is more efficient than iterating over
 		// all metric descriptors
 		req.Filter = filter
 		mdRespChan, err := s.client.ListMetricDescriptors(ctx, req)
@@ -576,7 +579,7 @@ func (s *Stackdriver) generatetimeSeriesConfs(
 	s.timeSeriesConfCache = &timeSeriesConfCache{
 		TimeSeriesConfs: ret,
 		Generated:       time.Now(),
-		TTL:             s.CacheTTL.Duration,
+		TTL:             time.Duration(s.CacheTTL),
 	}
 
 	return ret, nil
@@ -610,7 +613,9 @@ func (s *Stackdriver) gatherTimeSeries(
 
 			if tsDesc.ValueType == metricpb.MetricDescriptor_DISTRIBUTION {
 				dist := p.Value.GetDistributionValue()
-				s.addDistribution(dist, tags, ts, grouper, tsConf)
+				if err := s.addDistribution(dist, tags, ts, grouper, tsConf); err != nil {
+					return err
+				}
 			} else {
 				var value interface{}
 
@@ -627,7 +632,9 @@ func (s *Stackdriver) gatherTimeSeries(
 					value = p.Value.GetStringValue()
 				}
 
-				grouper.Add(tsConf.measurement, tags, ts, tsConf.fieldKey, value)
+				if err := grouper.Add(tsConf.measurement, tags, ts, tsConf.fieldKey, value); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -639,17 +646,27 @@ func (s *Stackdriver) gatherTimeSeries(
 func (s *Stackdriver) addDistribution(
 	metric *distributionpb.Distribution,
 	tags map[string]string, ts time.Time, grouper *lockedSeriesGrouper, tsConf *timeSeriesConf,
-) {
+) error {
 	field := tsConf.fieldKey
 	name := tsConf.measurement
 
-	grouper.Add(name, tags, ts, field+"_count", metric.Count)
-	grouper.Add(name, tags, ts, field+"_mean", metric.Mean)
-	grouper.Add(name, tags, ts, field+"_sum_of_squared_deviation", metric.SumOfSquaredDeviation)
+	if err := grouper.Add(name, tags, ts, field+"_count", metric.Count); err != nil {
+		return err
+	}
+	if err := grouper.Add(name, tags, ts, field+"_mean", metric.Mean); err != nil {
+		return err
+	}
+	if err := grouper.Add(name, tags, ts, field+"_sum_of_squared_deviation", metric.SumOfSquaredDeviation); err != nil {
+		return err
+	}
 
 	if metric.Range != nil {
-		grouper.Add(name, tags, ts, field+"_range_min", metric.Range.Min)
-		grouper.Add(name, tags, ts, field+"_range_max", metric.Range.Max)
+		if err := grouper.Add(name, tags, ts, field+"_range_min", metric.Range.Min); err != nil {
+			return err
+		}
+		if err := grouper.Add(name, tags, ts, field+"_range_max", metric.Range.Max); err != nil {
+			return err
+		}
 	}
 
 	linearBuckets := metric.BucketOptions.GetLinearBuckets()
@@ -690,8 +707,12 @@ func (s *Stackdriver) addDistribution(
 		if i < int32(len(metric.BucketCounts)) {
 			count += metric.BucketCounts[i]
 		}
-		grouper.Add(name, tags, ts, field+"_bucket", count)
+		if err := grouper.Add(name, tags, ts, field+"_bucket", count); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
 func init() {

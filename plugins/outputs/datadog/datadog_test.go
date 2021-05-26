@@ -3,22 +3,22 @@ package datadog
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/influxdata/telegraf/testutil"
-
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 var (
-	fakeUrl    = "http://test.datadog.com"
-	fakeApiKey = "123456"
+	fakeURL    = "http://test.datadog.com"
+	fakeAPIKey = "123456"
 )
 
 func NewDatadog(url string) *Datadog {
@@ -28,8 +28,8 @@ func NewDatadog(url string) *Datadog {
 }
 
 func fakeDatadog() *Datadog {
-	d := NewDatadog(fakeUrl)
-	d.Apikey = fakeApiKey
+	d := NewDatadog(fakeURL)
+	d.Apikey = fakeAPIKey
 	return d
 }
 
@@ -67,15 +67,15 @@ func TestBadStatusCode(t *testing.T) {
 	if err == nil {
 		t.Errorf("error expected but none returned")
 	} else {
-		require.EqualError(t, fmt.Errorf("received bad status code, 500\n"), err.Error())
+		require.EqualError(t, fmt.Errorf("received bad status code, 500"), err.Error())
 	}
 }
 
 func TestAuthenticatedUrl(t *testing.T) {
 	d := fakeDatadog()
 
-	authUrl := d.authenticatedUrl()
-	assert.EqualValues(t, fmt.Sprintf("%s?api_key=%s", fakeUrl, fakeApiKey), authUrl)
+	authURL := d.authenticatedURL()
+	assert.EqualValues(t, fmt.Sprintf("%s?api_key=%s", fakeURL, fakeAPIKey), authURL)
 }
 
 func TestBuildTags(t *testing.T) {
@@ -248,4 +248,46 @@ func TestVerifyValue(t *testing.T) {
 			t.Errorf("%s: verification failed\n", tt.ptIn.Name())
 		}
 	}
+}
+
+func TestNaNIsSkipped(t *testing.T) {
+	plugin := &Datadog{
+		Apikey: "testing",
+		URL:    "", // No request will be sent because all fields are skipped
+	}
+
+	err := plugin.Connect()
+	require.NoError(t, err)
+
+	err = plugin.Write([]telegraf.Metric{
+		testutil.MustMetric(
+			"cpu",
+			map[string]string{},
+			map[string]interface{}{
+				"time_idle": math.NaN(),
+			},
+			time.Now()),
+	})
+	require.NoError(t, err)
+}
+
+func TestInfIsSkipped(t *testing.T) {
+	plugin := &Datadog{
+		Apikey: "testing",
+		URL:    "", // No request will be sent because all fields are skipped
+	}
+
+	err := plugin.Connect()
+	require.NoError(t, err)
+
+	err = plugin.Write([]telegraf.Metric{
+		testutil.MustMetric(
+			"cpu",
+			map[string]string{},
+			map[string]interface{}{
+				"time_idle": math.Inf(0),
+			},
+			time.Now()),
+	})
+	require.NoError(t, err)
 }

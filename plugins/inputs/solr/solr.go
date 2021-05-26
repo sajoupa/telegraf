@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
@@ -18,23 +19,25 @@ import (
 const mbeansPath = "/admin/mbeans?stats=true&wt=json&cat=CORE&cat=QUERYHANDLER&cat=UPDATEHANDLER&cat=CACHE"
 const adminCoresPath = "/solr/admin/cores?action=STATUS&wt=json"
 
-type node struct {
-	Host string `json:"host"`
-}
-
 const sampleConfig = `
   ## specify a list of one or more Solr servers
   servers = ["http://localhost:8983"]
 
   ## specify a list of one or more Solr cores (default - all)
   # cores = ["main"]
+
+  ## Optional HTTP Basic Auth Credentials
+  # username = "username"
+  # password = "pa$$word"
 `
 
 // Solr is a plugin to read stats from one or many Solr servers
 type Solr struct {
 	Local       bool
 	Servers     []string
-	HTTPTimeout internal.Duration
+	Username    string
+	Password    string
+	HTTPTimeout config.Duration
 	Cores       []string
 	client      *http.Client
 }
@@ -119,7 +122,7 @@ type Cache struct {
 // NewSolr return a new instance of Solr
 func NewSolr() *Solr {
 	return &Solr{
-		HTTPTimeout: internal.Duration{Duration: time.Second * 5},
+		HTTPTimeout: config.Duration(time.Second * 5),
 	}
 }
 
@@ -220,7 +223,7 @@ func addAdminCoresStatusToAcc(acc telegraf.Accumulator, adminCoreStatus *AdminCo
 func addCoreMetricsToAcc(acc telegraf.Accumulator, core string, mBeansData *MBeansData, time time.Time) error {
 	var coreMetrics map[string]Core
 	if len(mBeansData.SolrMbeans) < 2 {
-		return fmt.Errorf("no core metric data to unmarshall")
+		return fmt.Errorf("no core metric data to unmarshal")
 	}
 	if err := json.Unmarshal(mBeansData.SolrMbeans[1], &coreMetrics); err != nil {
 		return err
@@ -251,7 +254,7 @@ func addQueryHandlerMetricsToAcc(acc telegraf.Accumulator, core string, mBeansDa
 	var queryMetrics map[string]QueryHandler
 
 	if len(mBeansData.SolrMbeans) < 4 {
-		return fmt.Errorf("no query handler metric data to unmarshall")
+		return fmt.Errorf("no query handler metric data to unmarshal")
 	}
 
 	if err := json.Unmarshal(mBeansData.SolrMbeans[3], &queryMetrics); err != nil {
@@ -283,7 +286,6 @@ func addQueryHandlerMetricsToAcc(acc telegraf.Accumulator, core string, mBeansDa
 				"handler": name},
 			time,
 		)
-
 	}
 	return nil
 }
@@ -326,7 +328,7 @@ func addUpdateHandlerMetricsToAcc(acc telegraf.Accumulator, core string, mBeansD
 	var updateMetrics map[string]UpdateHandler
 
 	if len(mBeansData.SolrMbeans) < 6 {
-		return fmt.Errorf("no update handler metric data to unmarshall")
+		return fmt.Errorf("no update handler metric data to unmarshal")
 	}
 	if err := json.Unmarshal(mBeansData.SolrMbeans[5], &updateMetrics); err != nil {
 		return err
@@ -404,7 +406,7 @@ func getInt(unk interface{}) int64 {
 // Add cache metrics section to accumulator
 func addCacheMetricsToAcc(acc telegraf.Accumulator, core string, mBeansData *MBeansData, time time.Time) error {
 	if len(mBeansData.SolrMbeans) < 8 {
-		return fmt.Errorf("no cache metric data to unmarshall")
+		return fmt.Errorf("no cache metric data to unmarshal")
 	}
 	var cacheMetrics map[string]Cache
 	if err := json.Unmarshal(mBeansData.SolrMbeans[7], &cacheMetrics); err != nil {
@@ -460,18 +462,29 @@ func (s *Solr) mbeansURL(server string, core string) string {
 
 func (s *Solr) createHTTPClient() *http.Client {
 	tr := &http.Transport{
-		ResponseHeaderTimeout: s.HTTPTimeout.Duration,
+		ResponseHeaderTimeout: time.Duration(s.HTTPTimeout),
 	}
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   s.HTTPTimeout.Duration,
+		Timeout:   time.Duration(s.HTTPTimeout),
 	}
 
 	return client
 }
 
 func (s *Solr) gatherData(url string, v interface{}) error {
-	r, err := s.client.Get(url)
+	req, reqErr := http.NewRequest(http.MethodGet, url, nil)
+	if reqErr != nil {
+		return reqErr
+	}
+
+	if s.Username != "" {
+		req.SetBasicAuth(s.Username, s.Password)
+	}
+
+	req.Header.Set("User-Agent", internal.ProductToken())
+
+	r, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -480,10 +493,8 @@ func (s *Solr) gatherData(url string, v interface{}) error {
 		return fmt.Errorf("solr: API responded with status-code %d, expected %d, url %s",
 			r.StatusCode, http.StatusOK, url)
 	}
-	if err = json.NewDecoder(r.Body).Decode(v); err != nil {
-		return err
-	}
-	return nil
+
+	return json.NewDecoder(r.Body).Decode(v)
 }
 
 func init() {

@@ -2,12 +2,14 @@ package cloud_pubsub
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/pubsub"
-	"encoding/base64"
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/outputs"
 	"github.com/influxdata/telegraf/plugins/serializers"
@@ -61,7 +63,7 @@ const sampleConfig = `
   # base64_data = false
 
   ## Optional. PubSub attributes to add to metrics.
-  # [[inputs.pubsub.attributes]]
+  # [outputs.cloud_pubsub.attributes]
   #   my_attr = "tag_value"
 `
 
@@ -71,12 +73,14 @@ type PubSub struct {
 	Topic           string            `toml:"topic"`
 	Attributes      map[string]string `toml:"attributes"`
 
-	SendBatched           bool              `toml:"send_batched"`
-	PublishCountThreshold int               `toml:"publish_count_threshold"`
-	PublishByteThreshold  int               `toml:"publish_byte_threshold"`
-	PublishNumGoroutines  int               `toml:"publish_num_go_routines"`
-	PublishTimeout        internal.Duration `toml:"publish_timeout"`
-	Base64Data            bool              `toml:"base64_data"`
+	SendBatched           bool            `toml:"send_batched"`
+	PublishCountThreshold int             `toml:"publish_count_threshold"`
+	PublishByteThreshold  int             `toml:"publish_byte_threshold"`
+	PublishNumGoroutines  int             `toml:"publish_num_go_routines"`
+	PublishTimeout        config.Duration `toml:"publish_timeout"`
+	Base64Data            bool            `toml:"base64_data"`
+
+	Log telegraf.Logger `toml:"-"`
 
 	t topic
 	c *pubsub.Client
@@ -110,9 +114,8 @@ func (ps *PubSub) Connect() error {
 
 	if ps.stubTopic == nil {
 		return ps.initPubSubClient()
-	} else {
-		return nil
 	}
+	return nil
 }
 
 func (ps *PubSub) Close() error {
@@ -189,7 +192,7 @@ func (ps *PubSub) publishSettings() pubsub.PublishSettings {
 		settings.NumGoroutines = ps.PublishNumGoroutines
 	}
 
-	if ps.PublishTimeout.Duration > 0 {
+	if time.Duration(ps.PublishTimeout) > 0 {
 		settings.CountThreshold = 1
 	}
 
@@ -229,7 +232,8 @@ func (ps *PubSub) toMessages(metrics []telegraf.Metric) ([]*pubsub.Message, erro
 	for i, m := range metrics {
 		b, err := ps.serializer.Serialize(m)
 		if err != nil {
-			return nil, err
+			ps.Log.Debugf("Could not serialize metric: %v", err)
+			continue
 		}
 
 		if ps.Base64Data {

@@ -3,7 +3,6 @@ package zipkin
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -60,6 +59,8 @@ type Zipkin struct {
 	Port           int
 	Path           string
 
+	Log telegraf.Logger
+
 	address   string
 	handler   Handler
 	server    *http.Server
@@ -78,7 +79,7 @@ func (z Zipkin) SampleConfig() string {
 
 // Gather is empty for the zipkin plugin; all gathering is done through
 // the separate goroutine launched in (*Zipkin).Start()
-func (z *Zipkin) Gather(acc telegraf.Accumulator) error { return nil }
+func (z *Zipkin) Gather(_ telegraf.Accumulator) error { return nil }
 
 // Start launches a separate goroutine for collecting zipkin client http requests,
 // passing in a telegraf.Accumulator such that data can be collected.
@@ -105,7 +106,7 @@ func (z *Zipkin) Start(acc telegraf.Accumulator) error {
 	}
 
 	z.address = ln.Addr().String()
-	log.Printf("I! Started the zipkin listener on %s", z.address)
+	z.Log.Infof("Started the zipkin listener on %s", z.address)
 
 	go func() {
 		wg.Add(1)
@@ -124,6 +125,8 @@ func (z *Zipkin) Stop() {
 	defer z.waitGroup.Wait()
 	defer cancel()
 
+	// Ignore the returned error as we cannot do anything about it anyway
+	//nolint:errcheck,revive
 	z.server.Shutdown(ctx)
 }
 

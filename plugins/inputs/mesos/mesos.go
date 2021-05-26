@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/inputs"
 	jsonparser "github.com/influxdata/telegraf/plugins/parsers/json"
 )
@@ -32,8 +32,9 @@ type Mesos struct {
 	MasterCols []string `toml:"master_collections"`
 	Slaves     []string
 	SlaveCols  []string `toml:"slave_collections"`
-	//SlaveTasks bool
 	tls.ClientConfig
+
+	Log telegraf.Logger
 
 	initialized bool
 	client      *http.Client
@@ -42,15 +43,17 @@ type Mesos struct {
 }
 
 var allMetrics = map[Role][]string{
-	MASTER: {"resources", "master", "system", "agents", "frameworks", "tasks", "messages", "evqueue", "registrar"},
+	MASTER: {"resources", "master", "system", "agents", "frameworks", "framework_offers", "tasks", "messages", "evqueue", "registrar", "allocator"},
 	SLAVE:  {"resources", "agent", "system", "executors", "tasks", "messages"},
 }
 
 var sampleConfig = `
   ## Timeout, in ms.
   timeout = 100
+
   ## A list of Mesos masters.
   masters = ["http://localhost:5050"]
+
   ## Master metrics groups to be collected, by default, all enabled.
   master_collections = [
     "resources",
@@ -58,13 +61,17 @@ var sampleConfig = `
     "system",
     "agents",
     "frameworks",
+    "framework_offers",
     "tasks",
     "messages",
     "evqueue",
     "registrar",
+    "allocator",
   ]
+
   ## A list of Mesos slaves, default is []
   # slaves = []
+
   ## Slave metrics groups to be collected, by default, all enabled.
   # slave_collections = [
   #   "resources",
@@ -108,7 +115,7 @@ func parseURL(s string, role Role) (*url.URL, error) {
 		}
 
 		s = "http://" + host + ":" + port
-		log.Printf("W! [inputs.mesos] Using %q as connection URL; please update your configuration to use an URL", s)
+		log.Printf("W! [inputs.mesos] using %q as connection URL; please update your configuration to use an URL", s)
 	}
 
 	return url.Parse(s)
@@ -124,7 +131,7 @@ func (m *Mesos) initialize() error {
 	}
 
 	if m.Timeout == 0 {
-		log.Println("I! [inputs.mesos] Missing timeout value, setting default value (100ms)")
+		m.Log.Info("Missing timeout value, setting default value (100ms)")
 		m.Timeout = 100
 	}
 
@@ -152,7 +159,7 @@ func (m *Mesos) initialize() error {
 		m.slaveURLs = append(m.slaveURLs, u)
 	}
 
-	client, err := m.createHttpClient()
+	client, err := m.createHTTPClient()
 	if err != nil {
 		return err
 	}
@@ -178,7 +185,6 @@ func (m *Mesos) Gather(acc telegraf.Accumulator) error {
 		go func(master *url.URL) {
 			acc.AddError(m.gatherMainMetrics(master, MASTER, acc))
 			wg.Done()
-			return
 		}(master)
 	}
 
@@ -187,19 +193,7 @@ func (m *Mesos) Gather(acc telegraf.Accumulator) error {
 		go func(slave *url.URL) {
 			acc.AddError(m.gatherMainMetrics(slave, SLAVE, acc))
 			wg.Done()
-			return
 		}(slave)
-
-		// if !m.SlaveTasks {
-		// 	continue
-		// }
-
-		// wg.Add(1)
-		// go func(c string) {
-		// 	acc.AddError(m.gatherSlaveTaskMetrics(slave, acc))
-		// 	wg.Done()
-		// 	return
-		// }(v)
 	}
 
 	wg.Wait()
@@ -207,7 +201,7 @@ func (m *Mesos) Gather(acc telegraf.Accumulator) error {
 	return nil
 }
 
-func (m *Mesos) createHttpClient() (*http.Client, error) {
+func (m *Mesos) createHTTPClient() (*http.Client, error) {
 	tlsCfg, err := m.ClientConfig.TLSConfig()
 	if err != nil {
 		return nil, err
@@ -246,11 +240,9 @@ func metricsDiff(role Role, w []string) []string {
 	return b
 }
 
-// masterBlocks serves as kind of metrics registry groupping them in sets
+// masterBlocks serves as kind of metrics registry grouping them in sets
 func getMetrics(role Role, group string) []string {
-	var m map[string][]string
-
-	m = make(map[string][]string)
+	m := make(map[string][]string)
 
 	if role == MASTER {
 		m["resources"] = []string{
@@ -305,6 +297,10 @@ func getMetrics(role Role, group string) []string {
 			"master/slaves_connected",
 			"master/slaves_disconnected",
 			"master/slaves_inactive",
+			"master/slave_unreachable_canceled",
+			"master/slave_unreachable_completed",
+			"master/slave_unreachable_scheduled",
+			"master/slaves_unreachable",
 		}
 
 		m["frameworks"] = []string{
@@ -315,6 +311,12 @@ func getMetrics(role Role, group string) []string {
 			"master/outstanding_offers",
 		}
 
+		// framework_offers and allocator metrics have unpredictable names, so they can't be listed here.
+		// These empty groups are included to prevent the "unknown metrics group" info log below.
+		// filterMetrics() filters these metrics by looking for names with the corresponding prefix.
+		m["framework_offers"] = []string{}
+		m["allocator"] = []string{}
+
 		m["tasks"] = []string{
 			"master/tasks_error",
 			"master/tasks_failed",
@@ -324,6 +326,11 @@ func getMetrics(role Role, group string) []string {
 			"master/tasks_running",
 			"master/tasks_staging",
 			"master/tasks_starting",
+			"master/tasks_dropped",
+			"master/tasks_gone",
+			"master/tasks_gone_by_operator",
+			"master/tasks_killing",
+			"master/tasks_unreachable",
 		}
 
 		m["messages"] = []string{
@@ -363,12 +370,18 @@ func getMetrics(role Role, group string) []string {
 			"master/task_lost/source_master/reason_slave_removed",
 			"master/task_lost/source_slave/reason_executor_terminated",
 			"master/valid_executor_to_framework_messages",
+			"master/invalid_operation_status_update_acknowledgements",
+			"master/messages_operation_status_update_acknowledgement",
+			"master/messages_reconcile_operations",
+			"master/messages_suppress_offers",
+			"master/valid_operation_status_update_acknowledgements",
 		}
 
 		m["evqueue"] = []string{
 			"master/event_queue_dispatches",
 			"master/event_queue_http_requests",
 			"master/event_queue_messages",
+			"master/operator_event_stream_subscribers",
 		}
 
 		m["registrar"] = []string{
@@ -382,6 +395,11 @@ func getMetrics(role Role, group string) []string {
 			"registrar/state_store_ms/p99",
 			"registrar/state_store_ms/p999",
 			"registrar/state_store_ms/p9999",
+			"registrar/log/ensemble_size",
+			"registrar/log/recovered",
+			"registrar/queued_operations",
+			"registrar/registry_size_bytes",
+			"registrar/state_store_ms/count",
 		}
 	} else if role == SLAVE {
 		m["resources"] = []string{
@@ -459,7 +477,7 @@ func getMetrics(role Role, group string) []string {
 	ret, ok := m[group]
 
 	if !ok {
-		log.Printf("I! [mesos] Unknown %s metrics group: %s\n", role, group)
+		log.Printf("I! [inputs.mesos] unknown role %q metrics group: %s", role, group)
 		return []string{}
 	}
 
@@ -477,9 +495,27 @@ func (m *Mesos) filterMetrics(role Role, metrics *map[string]interface{}) {
 	}
 
 	for _, k := range metricsDiff(role, selectedMetrics) {
-		for _, v := range getMetrics(role, k) {
-			if _, ok = (*metrics)[v]; ok {
-				delete((*metrics), v)
+		switch k {
+		// allocator and framework_offers metrics have unpredictable names, so we have to identify them by name prefix.
+		case "allocator":
+			for m := range *metrics {
+				if strings.HasPrefix(m, "allocator/") {
+					delete(*metrics, m)
+				}
+			}
+		case "framework_offers":
+			for m := range *metrics {
+				if strings.HasPrefix(m, "master/frameworks/") || strings.HasPrefix(m, "frameworks/") {
+					delete(*metrics, m)
+				}
+			}
+
+		// All other metrics have predictable names. We can use getMetrics() to retrieve them.
+		default:
+			for _, v := range getMetrics(role, k) {
+				if _, ok = (*metrics)[v]; ok {
+					delete(*metrics, v)
+				}
 			}
 		}
 	}
@@ -490,49 +526,6 @@ type TaskStats struct {
 	ExecutorID  string                 `json:"executor_id"`
 	FrameworkID string                 `json:"framework_id"`
 	Statistics  map[string]interface{} `json:"statistics"`
-}
-
-func (m *Mesos) gatherSlaveTaskMetrics(u *url.URL, acc telegraf.Accumulator) error {
-	var metrics []TaskStats
-
-	tags := map[string]string{
-		"server": u.Hostname(),
-		"url":    urlTag(u),
-	}
-
-	resp, err := m.client.Get(withPath(u, "/monitor/statistics").String())
-
-	if err != nil {
-		return err
-	}
-
-	data, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return err
-	}
-
-	if err = json.Unmarshal([]byte(data), &metrics); err != nil {
-		return errors.New("Error decoding JSON response")
-	}
-
-	for _, task := range metrics {
-		tags["framework_id"] = task.FrameworkID
-
-		jf := jsonparser.JSONFlattener{}
-		err = jf.FlattenJSON("", task.Statistics)
-
-		if err != nil {
-			return err
-		}
-
-		timestamp := time.Unix(int64(jf.Fields["timestamp"].(float64)), 0)
-		jf.Fields["executor_id"] = task.ExecutorID
-
-		acc.AddFields("mesos_tasks", jf.Fields, tags, timestamp)
-	}
-
-	return nil
 }
 
 func withPath(u *url.URL, path string) *url.URL {
@@ -566,13 +559,15 @@ func (m *Mesos) gatherMainMetrics(u *url.URL, role Role, acc telegraf.Accumulato
 	}
 
 	data, err := ioutil.ReadAll(resp.Body)
+	// Ignore the returned error to not shadow the initial one
+	//nolint:errcheck,revive
 	resp.Body.Close()
 	if err != nil {
 		return err
 	}
 
-	if err = json.Unmarshal([]byte(data), &jsonOut); err != nil {
-		return errors.New("Error decoding JSON response")
+	if err = json.Unmarshal(data, &jsonOut); err != nil {
+		return errors.New("error decoding JSON response")
 	}
 
 	m.filterMetrics(role, &jsonOut)

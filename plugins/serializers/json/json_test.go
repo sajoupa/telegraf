@@ -2,14 +2,15 @@ package json
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/metric"
+	"github.com/influxdata/telegraf/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func MustMetric(v telegraf.Metric, err error) telegraf.Metric {
@@ -27,12 +28,11 @@ func TestSerializeMetricFloat(t *testing.T) {
 	fields := map[string]interface{}{
 		"usage_idle": float64(91.5),
 	}
-	m, err := metric.New("cpu", tags, fields, now)
-	assert.NoError(t, err)
+	m := metric.New("cpu", tags, fields, now)
 
 	s, _ := NewSerializer(0)
 	var buf []byte
-	buf, err = s.Serialize(m)
+	buf, err := s.Serialize(m)
 	assert.NoError(t, err)
 	expS := []byte(fmt.Sprintf(`{"fields":{"usage_idle":91.5},"name":"cpu","tags":{"cpu":"cpu0"},"timestamp":%d}`, now.Unix()) + "\n")
 	assert.Equal(t, string(expS), string(buf))
@@ -77,15 +77,13 @@ func TestSerialize_TimestampUnits(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := MustMetric(
-				metric.New(
-					"cpu",
-					map[string]string{},
-					map[string]interface{}{
-						"value": 42.0,
-					},
-					time.Unix(1525478795, 123456789),
-				),
+			m := metric.New(
+				"cpu",
+				map[string]string{},
+				map[string]interface{}{
+					"value": 42.0,
+				},
+				time.Unix(1525478795, 123456789),
 			)
 			s, _ := NewSerializer(tt.timestampUnits)
 			actual, err := s.Serialize(m)
@@ -103,12 +101,11 @@ func TestSerializeMetricInt(t *testing.T) {
 	fields := map[string]interface{}{
 		"usage_idle": int64(90),
 	}
-	m, err := metric.New("cpu", tags, fields, now)
-	assert.NoError(t, err)
+	m := metric.New("cpu", tags, fields, now)
 
 	s, _ := NewSerializer(0)
 	var buf []byte
-	buf, err = s.Serialize(m)
+	buf, err := s.Serialize(m)
 	assert.NoError(t, err)
 
 	expS := []byte(fmt.Sprintf(`{"fields":{"usage_idle":90},"name":"cpu","tags":{"cpu":"cpu0"},"timestamp":%d}`, now.Unix()) + "\n")
@@ -123,12 +120,11 @@ func TestSerializeMetricString(t *testing.T) {
 	fields := map[string]interface{}{
 		"usage_idle": "foobar",
 	}
-	m, err := metric.New("cpu", tags, fields, now)
-	assert.NoError(t, err)
+	m := metric.New("cpu", tags, fields, now)
 
 	s, _ := NewSerializer(0)
 	var buf []byte
-	buf, err = s.Serialize(m)
+	buf, err := s.Serialize(m)
 	assert.NoError(t, err)
 
 	expS := []byte(fmt.Sprintf(`{"fields":{"usage_idle":"foobar"},"name":"cpu","tags":{"cpu":"cpu0"},"timestamp":%d}`, now.Unix()) + "\n")
@@ -144,12 +140,11 @@ func TestSerializeMultiFields(t *testing.T) {
 		"usage_idle":  int64(90),
 		"usage_total": 8559615,
 	}
-	m, err := metric.New("cpu", tags, fields, now)
-	assert.NoError(t, err)
+	m := metric.New("cpu", tags, fields, now)
 
 	s, _ := NewSerializer(0)
 	var buf []byte
-	buf, err = s.Serialize(m)
+	buf, err := s.Serialize(m)
 	assert.NoError(t, err)
 
 	expS := []byte(fmt.Sprintf(`{"fields":{"usage_idle":90,"usage_total":8559615},"name":"cpu","tags":{"cpu":"cpu0"},"timestamp":%d}`, now.Unix()) + "\n")
@@ -164,8 +159,7 @@ func TestSerializeMetricWithEscapes(t *testing.T) {
 	fields := map[string]interface{}{
 		"U,age=Idle": int64(90),
 	}
-	m, err := metric.New("My CPU", tags, fields, now)
-	assert.NoError(t, err)
+	m := metric.New("My CPU", tags, fields, now)
 
 	s, _ := NewSerializer(0)
 	buf, err := s.Serialize(m)
@@ -176,15 +170,13 @@ func TestSerializeMetricWithEscapes(t *testing.T) {
 }
 
 func TestSerializeBatch(t *testing.T) {
-	m := MustMetric(
-		metric.New(
-			"cpu",
-			map[string]string{},
-			map[string]interface{}{
-				"value": 42.0,
-			},
-			time.Unix(0, 0),
-		),
+	m := metric.New(
+		"cpu",
+		map[string]string{},
+		map[string]interface{}{
+			"value": 42.0,
+		},
+		time.Unix(0, 0),
 	)
 
 	metrics := []telegraf.Metric{m, m}
@@ -192,4 +184,43 @@ func TestSerializeBatch(t *testing.T) {
 	buf, err := s.SerializeBatch(metrics)
 	require.NoError(t, err)
 	require.Equal(t, []byte(`{"metrics":[{"fields":{"value":42},"name":"cpu","tags":{},"timestamp":0},{"fields":{"value":42},"name":"cpu","tags":{},"timestamp":0}]}`), buf)
+}
+
+func TestSerializeBatchSkipInf(t *testing.T) {
+	metrics := []telegraf.Metric{
+		testutil.MustMetric(
+			"cpu",
+			map[string]string{},
+			map[string]interface{}{
+				"inf":       math.Inf(1),
+				"time_idle": 42,
+			},
+			time.Unix(0, 0),
+		),
+	}
+
+	s, err := NewSerializer(0)
+	require.NoError(t, err)
+	buf, err := s.SerializeBatch(metrics)
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"metrics":[{"fields":{"time_idle":42},"name":"cpu","tags":{},"timestamp":0}]}`), buf)
+}
+
+func TestSerializeBatchSkipInfAllFields(t *testing.T) {
+	metrics := []telegraf.Metric{
+		testutil.MustMetric(
+			"cpu",
+			map[string]string{},
+			map[string]interface{}{
+				"inf": math.Inf(1),
+			},
+			time.Unix(0, 0),
+		),
+	}
+
+	s, err := NewSerializer(0)
+	require.NoError(t, err)
+	buf, err := s.SerializeBatch(metrics)
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"metrics":[{"fields":{},"name":"cpu","tags":{},"timestamp":0}]}`), buf)
 }

@@ -10,7 +10,7 @@ import (
 )
 
 func newM1() telegraf.Metric {
-	m1, _ := metric.New("access_log",
+	m1 := metric.New("access_log",
 		map[string]string{
 			"verb":      "GET",
 			"resp_code": "200",
@@ -24,7 +24,7 @@ func newM1() telegraf.Metric {
 }
 
 func newM2() telegraf.Metric {
-	m2, _ := metric.New("access_log",
+	m2 := metric.New("access_log",
 		map[string]string{
 			"verb":      "GET",
 			"resp_code": "200",
@@ -106,6 +106,20 @@ func TestTagConversions(t *testing.T) {
 			expectedTags: map[string]string{
 				"verb":      "GET",
 				"resp_code": "2xx",
+			},
+		},
+		{
+			message: "Should append to existing tag",
+			converter: converter{
+				Key:         "verb",
+				Pattern:     "^(.*)$",
+				Replacement: " (${1})",
+				ResultKey:   "resp_code",
+				Append:      true,
+			},
+			expectedTags: map[string]string{
+				"verb":      "GET",
+				"resp_code": "200 (GET)",
 			},
 		},
 		{

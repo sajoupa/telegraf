@@ -12,7 +12,7 @@ import (
 type mockFetcher struct {
 }
 
-func (h *mockFetcher) Fetch(address string) ([]hddtemp.Disk, error) {
+func (h *mockFetcher) Fetch(_ string) ([]hddtemp.Disk, error) {
 	return []hddtemp.Disk{
 		{
 			DeviceName:  "Disk1",
@@ -27,7 +27,6 @@ func (h *mockFetcher) Fetch(address string) ([]hddtemp.Disk, error) {
 			Unit:        "C",
 		},
 	}, nil
-
 }
 func newMockFetcher() *mockFetcher {
 	return &mockFetcher{}
@@ -36,6 +35,7 @@ func newMockFetcher() *mockFetcher {
 func TestFetch(t *testing.T) {
 	hddtemp := &HDDTemp{
 		fetcher: newMockFetcher(),
+		Address: "localhost",
 		Devices: []string{"*"},
 	}
 
@@ -58,6 +58,7 @@ func TestFetch(t *testing.T) {
 				"model":  "Model1",
 				"unit":   "C",
 				"status": "",
+				"source": "localhost",
 			},
 		},
 		{
@@ -69,6 +70,7 @@ func TestFetch(t *testing.T) {
 				"model":  "Model2",
 				"unit":   "C",
 				"status": "",
+				"source": "localhost",
 			},
 		},
 	}
@@ -76,5 +78,4 @@ func TestFetch(t *testing.T) {
 	for _, test := range tests {
 		acc.AssertContainsTaggedFields(t, "hddtemp", test.fields, test.tags)
 	}
-
 }

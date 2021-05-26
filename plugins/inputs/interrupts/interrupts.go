@@ -13,7 +13,7 @@ import (
 )
 
 type Interrupts struct {
-	CpuAsTag bool `toml:"cpu_as_tag"`
+	CPUAsTag bool `toml:"cpu_as_tag"`
 }
 
 type IRQ struct {
@@ -102,7 +102,7 @@ func gatherTagsFields(irq IRQ) (map[string]string, map[string]interface{}) {
 	tags := map[string]string{"irq": irq.ID, "type": irq.Type, "device": irq.Device}
 	fields := map[string]interface{}{"total": irq.Total}
 	for i := 0; i < len(irq.Cpus); i++ {
-		cpu := fmt.Sprintf("cpu%d", i)
+		cpu := fmt.Sprintf("CPU%d", i)
 		fields[cpu] = irq.Cpus[i]
 	}
 	return tags, fields
@@ -121,7 +121,7 @@ func (s *Interrupts) Gather(acc telegraf.Accumulator) error {
 			acc.AddError(fmt.Errorf("Parsing %s: %s", file, err))
 			continue
 		}
-		reportMetrics(measurement, irqs, acc, s.CpuAsTag)
+		reportMetrics(measurement, irqs, acc, s.CPUAsTag)
 	}
 	return nil
 }

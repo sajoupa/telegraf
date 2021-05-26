@@ -1,17 +1,21 @@
 package elasticsearch
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
+	"crypto/sha256"
+
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
-	"github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/config"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/outputs"
 	"gopkg.in/olivere/elastic.v5"
 )
@@ -24,11 +28,14 @@ type Elasticsearch struct {
 	Username            string
 	Password            string
 	EnableSniffer       bool
-	Timeout             internal.Duration
-	HealthCheckInterval internal.Duration
+	Timeout             config.Duration
+	HealthCheckInterval config.Duration
+	EnableGzip          bool
 	ManageTemplate      bool
 	TemplateName        string
 	OverwriteTemplate   bool
+	ForceDocumentID     bool `toml:"force_document_id"`
+	MajorReleaseNumber  int
 	tls.ClientConfig
 
 	Client *elastic.Client
@@ -44,10 +51,12 @@ var sampleConfig = `
   ## Set to true to ask Elasticsearch a list of all cluster nodes,
   ## thus it is not necessary to list all nodes in the urls config option.
   enable_sniffer = false
+  ## Set to true to enable gzip compression
+  enable_gzip = false
   ## Set the interval to check if the Elasticsearch nodes are available
   ## Setting to "0s" will disable the health check (not recommended in production)
   health_check_interval = "10s"
-  ## HTTP basic authentication details (eg. when using Shield)
+  ## HTTP basic authentication details
   # username = "telegraf"
   # password = "mypassword"
 
@@ -83,14 +92,92 @@ var sampleConfig = `
   template_name = "telegraf"
   ## Set to true if you want telegraf to overwrite an existing template
   overwrite_template = false
+  ## If set to true a unique ID hash will be sent as sha256(concat(timestamp,measurement,series-hash)) string
+  ## it will enable data resend and update metric points avoiding duplicated metrics with diferent id's
+  force_document_id = false
 `
+
+const telegrafTemplate = `
+{
+	{{ if (lt .Version 6) }}
+	"template": "{{.TemplatePattern}}",
+	{{ else }}
+	"index_patterns" : [ "{{.TemplatePattern}}" ],
+	{{ end }}
+	"settings": {
+		"index": {
+			"refresh_interval": "10s",
+			"mapping.total_fields.limit": 5000,
+			"auto_expand_replicas" : "0-1",
+			"codec" : "best_compression"
+		}
+	},
+	"mappings" : {
+		{{ if (lt .Version 7) }}
+		"metrics" : {
+			{{ if (lt .Version 6) }}
+			"_all": { "enabled": false },
+			{{ end }}
+		{{ end }}
+		"properties" : {
+			"@timestamp" : { "type" : "date" },
+			"measurement_name" : { "type" : "keyword" }
+		},
+		"dynamic_templates": [
+			{
+				"tags": {
+					"match_mapping_type": "string",
+					"path_match": "tag.*",
+					"mapping": {
+						"ignore_above": 512,
+						"type": "keyword"
+					}
+				}
+			},
+			{
+				"metrics_long": {
+					"match_mapping_type": "long",
+					"mapping": {
+						"type": "float",
+						"index": false
+					}
+				}
+			},
+			{
+				"metrics_double": {
+					"match_mapping_type": "double",
+					"mapping": {
+						"type": "float",
+						"index": false
+					}
+				}
+			},
+			{
+				"text_fields": {
+					"match": "*",
+					"mapping": {
+						"norms": false
+					}
+				}
+			}
+		]
+		{{ if (lt .Version 7) }}
+		}
+		{{ end }}
+	}
+}`
+
+type templatePart struct {
+	TemplatePattern string
+	Version         int
+}
 
 func (a *Elasticsearch) Connect() error {
 	if a.URLs == nil || a.IndexName == "" {
 		return fmt.Errorf("Elasticsearch urls or index_name is not defined")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout.Duration)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.Timeout))
 	defer cancel()
 
 	var clientOptions []elastic.ClientOptionFunc
@@ -105,14 +192,15 @@ func (a *Elasticsearch) Connect() error {
 
 	httpclient := &http.Client{
 		Transport: tr,
-		Timeout:   a.Timeout.Duration,
+		Timeout:   time.Duration(a.Timeout),
 	}
 
 	clientOptions = append(clientOptions,
 		elastic.SetHttpClient(httpclient),
 		elastic.SetSniff(a.EnableSniffer),
 		elastic.SetURL(a.URLs...),
-		elastic.SetHealthcheckInterval(a.HealthCheckInterval.Duration),
+		elastic.SetHealthcheckInterval(time.Duration(a.HealthCheckInterval)),
+		elastic.SetGzip(a.EnableGzip),
 	)
 
 	if a.Username != "" && a.Password != "" {
@@ -121,7 +209,7 @@ func (a *Elasticsearch) Connect() error {
 		)
 	}
 
-	if a.HealthCheckInterval.Duration == 0 {
+	if time.Duration(a.HealthCheckInterval) == 0 {
 		clientOptions = append(clientOptions,
 			elastic.SetHealthcheck(false),
 		)
@@ -142,14 +230,15 @@ func (a *Elasticsearch) Connect() error {
 	}
 
 	// quit if ES version is not supported
-	i, err := strconv.Atoi(strings.Split(esVersion, ".")[0])
-	if err != nil || i < 5 {
+	majorReleaseNumber, err := strconv.Atoi(strings.Split(esVersion, ".")[0])
+	if err != nil || majorReleaseNumber < 5 {
 		return fmt.Errorf("Elasticsearch version not supported: %s", esVersion)
 	}
 
 	log.Println("I! Elasticsearch version: " + esVersion)
 
 	a.Client = client
+	a.MajorReleaseNumber = majorReleaseNumber
 
 	if a.ManageTemplate {
 		err := a.manageTemplate(ctx)
@@ -161,6 +250,18 @@ func (a *Elasticsearch) Connect() error {
 	a.IndexName, a.TagKeys = a.GetTagKeys(a.IndexName)
 
 	return nil
+}
+
+// GetPointID generates a unique ID for a Metric Point
+func GetPointID(m telegraf.Metric) string {
+	var buffer bytes.Buffer
+	//Timestamp(ns),measurement name and Series Hash for compute the final SHA256 based hash ID
+
+	buffer.WriteString(strconv.FormatInt(m.Time().Local().UnixNano(), 10))
+	buffer.WriteString(m.Name())
+	buffer.WriteString(strconv.FormatUint(m.HashID(), 10))
+
+	return fmt.Sprintf("%x", sha256.Sum256(buffer.Bytes()))
 }
 
 func (a *Elasticsearch) Write(metrics []telegraf.Metric) error {
@@ -184,14 +285,21 @@ func (a *Elasticsearch) Write(metrics []telegraf.Metric) error {
 		m["tag"] = metric.Tags()
 		m[name] = metric.Fields()
 
-		bulkRequest.Add(elastic.NewBulkIndexRequest().
-			Index(indexName).
-			Type("metrics").
-			Doc(m))
+		br := elastic.NewBulkIndexRequest().Index(indexName).Doc(m)
 
+		if a.ForceDocumentID {
+			id := GetPointID(metric)
+			br.Id(id)
+		}
+
+		if a.MajorReleaseNumber <= 6 {
+			br.Type("metrics")
+		}
+
+		bulkRequest.Add(br)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout.Duration)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.Timeout))
 	defer cancel()
 
 	res, err := bulkRequest.Do(ctx)
@@ -203,12 +311,12 @@ func (a *Elasticsearch) Write(metrics []telegraf.Metric) error {
 	if res.Errors {
 		for id, err := range res.Failed() {
 			log.Printf("E! Elasticsearch indexing failure, id: %d, error: %s, caused by: %s, %s", id, err.Error.Reason, err.Error.CausedBy["reason"], err.Error.CausedBy["type"])
+			break
 		}
 		return fmt.Errorf("W! Elasticsearch failed to index %d metrics", len(res.Failed()))
 	}
 
 	return nil
-
 }
 
 func (a *Elasticsearch) manageTemplate(ctx context.Context) error {
@@ -237,82 +345,29 @@ func (a *Elasticsearch) manageTemplate(ctx context.Context) error {
 	}
 
 	if (a.OverwriteTemplate) || (!templateExists) || (templatePattern != "") {
-		// Create or update the template
-		tmpl := fmt.Sprintf(`
-			{
-				"template":"%s",
-				"settings": {
-					"index": {
-						"refresh_interval": "10s",
-						"mapping.total_fields.limit": 5000
-					}
-				},
-				"mappings" : {
-					"_default_" : {
-						"_all": { "enabled": false	  },
-						"properties" : {
-							"@timestamp" : { "type" : "date" },
-							"measurement_name" : { "type" : "keyword" }
-						},
-						"dynamic_templates": [
-							{
-								"tags": {
-									"match_mapping_type": "string",
-									"path_match": "tag.*",
-									"mapping": {
-										"ignore_above": 512,
-										"type": "keyword"
-									}
-								}
-							},
-							{
-								"metrics_long": {
-									"match_mapping_type": "long",
-									"mapping": {
-										"type": "float",
-										"index": false
-									}
-								}
-							},
-							{
-								"metrics_double": {
-									"match_mapping_type": "double",
-									"mapping": {
-										"type": "float",
-										"index": false
-									}
-								}
-							},
-							{
-								"text_fields": {
-									"match": "*",
-									"mapping": {
-										"norms": false
-									}
-								}
-							}
-						]
-					}
-				}
-			}`, templatePattern+"*")
-		_, errCreateTemplate := a.Client.IndexPutTemplate(a.TemplateName).BodyString(tmpl).Do(ctx)
+		tp := templatePart{
+			TemplatePattern: templatePattern + "*",
+			Version:         a.MajorReleaseNumber,
+		}
+
+		t := template.Must(template.New("template").Parse(telegrafTemplate))
+		var tmpl bytes.Buffer
+
+		t.Execute(&tmpl, tp)
+		_, errCreateTemplate := a.Client.IndexPutTemplate(a.TemplateName).BodyString(tmpl.String()).Do(ctx)
 
 		if errCreateTemplate != nil {
 			return fmt.Errorf("Elasticsearch failed to create index template %s : %s", a.TemplateName, errCreateTemplate)
 		}
 
 		log.Printf("D! Elasticsearch template %s created or updated\n", a.TemplateName)
-
 	} else {
-
 		log.Println("D! Found existing Elasticsearch template. Skipping template management")
-
 	}
 	return nil
 }
 
 func (a *Elasticsearch) GetTagKeys(indexName string) (string, []string) {
-
 	tagKeys := []string{}
 	startTag := strings.Index(indexName, "{{")
 
@@ -321,7 +376,6 @@ func (a *Elasticsearch) GetTagKeys(indexName string) (string, []string) {
 
 		if endTag < 0 {
 			startTag = -1
-
 		} else {
 			tagName := indexName[startTag+2 : endTag]
 
@@ -365,7 +419,6 @@ func (a *Elasticsearch) GetIndexName(indexName string, eventTime time.Time, tagK
 	}
 
 	return fmt.Sprintf(indexName, tagValues...)
-
 }
 
 func getISOWeek(eventTime time.Time) string {
@@ -389,8 +442,8 @@ func (a *Elasticsearch) Close() error {
 func init() {
 	outputs.Add("elasticsearch", func() telegraf.Output {
 		return &Elasticsearch{
-			Timeout:             internal.Duration{Duration: time.Second * 5},
-			HealthCheckInterval: internal.Duration{Duration: time.Second * 10},
+			Timeout:             config.Duration(time.Second * 5),
+			HealthCheckInterval: config.Duration(time.Second * 10),
 		}
 	})
 }

@@ -37,6 +37,7 @@ func TestReadsMetricsFromKafka(t *testing.T) {
 
 	// Start the Kafka Consumer
 	k := &Kafka{
+		Log:            testutil.Logger{},
 		ConsumerGroup:  "telegraf_test_consumers",
 		Topics:         []string{testTopic},
 		ZookeeperPeers: zkPeers,
@@ -77,8 +78,8 @@ func TestReadsMetricsFromKafka(t *testing.T) {
 	}
 }
 
-// Waits for the metric that was sent to the kafka broker to arrive at the kafka
-// consumer
+//nolint:unused // Used in skipped tests
+// Waits for the metric that was sent to the kafka broker to arrive at the kafka consumer
 func waitForPoint(acc *testutil.Accumulator, t *testing.T) {
 	// Give the kafka container up to 2 seconds to get the point to the consumer
 	ticker := time.NewTicker(5 * time.Millisecond)

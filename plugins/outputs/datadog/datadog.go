@@ -4,33 +4,35 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/plugins/outputs"
 )
 
 type Datadog struct {
-	Apikey  string
-	Timeout internal.Duration
+	Apikey  string          `toml:"apikey"`
+	Timeout config.Duration `toml:"timeout"`
+	URL     string          `toml:"url"`
+	Log     telegraf.Logger `toml:"-"`
 
-	URL    string `toml:"url"`
 	client *http.Client
 }
 
 var sampleConfig = `
   ## Datadog API key
-  apikey = "my-secret-key" # required.
-
-  # The base endpoint URL can optionally be specified but it defaults to:
-  #url = "https://app.datadoghq.com/api/v1/series"
+  apikey = "my-secret-key"
 
   ## Connection timeout.
   # timeout = "5s"
+
+  ## Write URL override; useful for debugging.
+  # url = "https://app.datadoghq.com/api/v1/series"
 `
 
 type TimeSeries struct {
@@ -46,7 +48,7 @@ type Metric struct {
 
 type Point [2]float64
 
-const datadog_api = "https://app.datadoghq.com/api/v1/series"
+const datadogAPI = "https://app.datadoghq.com/api/v1/series"
 
 func (d *Datadog) Connect() error {
 	if d.Apikey == "" {
@@ -57,15 +59,12 @@ func (d *Datadog) Connect() error {
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 		},
-		Timeout: d.Timeout.Duration,
+		Timeout: time.Duration(d.Timeout),
 	}
 	return nil
 }
 
 func (d *Datadog) Write(metrics []telegraf.Metric) error {
-	if len(metrics) == 0 {
-		return nil
-	}
 	ts := TimeSeries{}
 	tempSeries := []*Metric{}
 	metricCounter := 0
@@ -74,6 +73,10 @@ func (d *Datadog) Write(metrics []telegraf.Metric) error {
 		if dogMs, err := buildMetrics(m); err == nil {
 			metricTags := buildTags(m.TagList())
 			host, _ := m.GetTag("host")
+
+			if len(dogMs) == 0 {
+				continue
+			}
 
 			for fieldName, dogM := range dogMs {
 				// name of the datadog measurement
@@ -94,31 +97,35 @@ func (d *Datadog) Write(metrics []telegraf.Metric) error {
 				metricCounter++
 			}
 		} else {
-			log.Printf("I! unable to build Metric for %s due to error '%v', skipping\n", m.Name(), err)
+			d.Log.Infof("Unable to build Metric for %s due to error '%v', skipping", m.Name(), err)
 		}
 	}
 
-	redactedApiKey := "****************"
+	if len(tempSeries) == 0 {
+		return nil
+	}
+
+	redactedAPIKey := "****************"
 	ts.Series = make([]*Metric, metricCounter)
 	copy(ts.Series, tempSeries[0:])
 	tsBytes, err := json.Marshal(ts)
 	if err != nil {
-		return fmt.Errorf("unable to marshal TimeSeries, %s\n", err.Error())
+		return fmt.Errorf("unable to marshal TimeSeries, %s", err.Error())
 	}
-	req, err := http.NewRequest("POST", d.authenticatedUrl(), bytes.NewBuffer(tsBytes))
+	req, err := http.NewRequest("POST", d.authenticatedURL(), bytes.NewBuffer(tsBytes))
 	if err != nil {
-		return fmt.Errorf("unable to create http.Request, %s\n", strings.Replace(err.Error(), d.Apikey, redactedApiKey, -1))
+		return fmt.Errorf("unable to create http.Request, %s", strings.Replace(err.Error(), d.Apikey, redactedAPIKey, -1))
 	}
 	req.Header.Add("Content-Type", "application/json")
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("error POSTing metrics, %s\n", strings.Replace(err.Error(), d.Apikey, redactedApiKey, -1))
+		return fmt.Errorf("error POSTing metrics, %s", strings.Replace(err.Error(), d.Apikey, redactedAPIKey, -1))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 209 {
-		return fmt.Errorf("received bad status code, %d\n", resp.StatusCode)
+		return fmt.Errorf("received bad status code, %d", resp.StatusCode)
 	}
 
 	return nil
@@ -132,7 +139,7 @@ func (d *Datadog) Description() string {
 	return "Configuration for DataDog API to send metrics to."
 }
 
-func (d *Datadog) authenticatedUrl() string {
+func (d *Datadog) authenticatedURL() string {
 	q := url.Values{
 		"api_key": []string{d.Apikey},
 	}
@@ -160,15 +167,18 @@ func buildTags(tagList []*telegraf.Tag) []string {
 	index := 0
 	for _, tag := range tagList {
 		tags[index] = fmt.Sprintf("%s:%s", tag.Key, tag.Value)
-		index += 1
+		index++
 	}
 	return tags
 }
 
 func verifyValue(v interface{}) bool {
-	switch v.(type) {
+	switch v := v.(type) {
 	case string:
 		return false
+	case float64:
+		// The payload will be encoded as JSON, which does not allow NaN or Inf.
+		return !math.IsNaN(v) && !math.IsInf(v, 0)
 	}
 	return true
 }
@@ -199,7 +209,7 @@ func (d *Datadog) Close() error {
 func init() {
 	outputs.Add("datadog", func() telegraf.Output {
 		return &Datadog{
-			URL: datadog_api,
+			URL: datadogAPI,
 		}
 	})
 }

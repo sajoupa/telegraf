@@ -13,16 +13,17 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/internal"
+	"github.com/influxdata/telegraf/config"
+	"github.com/influxdata/telegraf/plugins/common/tls"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
 type NginxPlus struct {
-	Urls []string
+	Urls            []string        `toml:"urls"`
+	ResponseTimeout config.Duration `toml:"response_timeout"`
+	tls.ClientConfig
 
 	client *http.Client
-
-	ResponseTimeout internal.Duration
 }
 
 var sampleConfig = `
@@ -31,6 +32,13 @@ var sampleConfig = `
 
   # HTTP response timeout (default: 5s)
   response_timeout = "5s"
+
+  ## Optional TLS Config
+  # tls_ca = "/etc/telegraf/ca.pem"
+  # tls_cert = "/etc/telegraf/cert.pem"
+  # tls_key = "/etc/telegraf/key.pem"
+  ## Use TLS but skip chain & host verification
+  # insecure_skip_verify = false
 `
 
 func (n *NginxPlus) SampleConfig() string {
@@ -48,7 +56,7 @@ func (n *NginxPlus) Gather(acc telegraf.Accumulator) error {
 	// collection interval
 
 	if n.client == nil {
-		client, err := n.createHttpClient()
+		client, err := n.createHTTPClient()
 		if err != nil {
 			return err
 		}
@@ -65,7 +73,7 @@ func (n *NginxPlus) Gather(acc telegraf.Accumulator) error {
 		wg.Add(1)
 		go func(addr *url.URL) {
 			defer wg.Done()
-			acc.AddError(n.gatherUrl(addr, acc))
+			acc.AddError(n.gatherURL(addr, acc))
 		}(addr)
 	}
 
@@ -73,21 +81,27 @@ func (n *NginxPlus) Gather(acc telegraf.Accumulator) error {
 	return nil
 }
 
-func (n *NginxPlus) createHttpClient() (*http.Client, error) {
+func (n *NginxPlus) createHTTPClient() (*http.Client, error) {
+	if n.ResponseTimeout < config.Duration(time.Second) {
+		n.ResponseTimeout = config.Duration(time.Second * 5)
+	}
 
-	if n.ResponseTimeout.Duration < time.Second {
-		n.ResponseTimeout.Duration = time.Second * 5
+	tlsConfig, err := n.ClientConfig.TLSConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	client := &http.Client{
-		Transport: &http.Transport{},
-		Timeout:   n.ResponseTimeout.Duration,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+		Timeout: time.Duration(n.ResponseTimeout),
 	}
 
 	return client, nil
 }
 
-func (n *NginxPlus) gatherUrl(addr *url.URL, acc telegraf.Accumulator) error {
+func (n *NginxPlus) gatherURL(addr *url.URL, acc telegraf.Accumulator) error {
 	resp, err := n.client.Get(addr.String())
 
 	if err != nil {
@@ -100,7 +114,7 @@ func (n *NginxPlus) gatherUrl(addr *url.URL, acc telegraf.Accumulator) error {
 	contentType := strings.Split(resp.Header.Get("Content-Type"), ";")[0]
 	switch contentType {
 	case "application/json":
-		return gatherStatusUrl(bufio.NewReader(resp.Body), getTags(addr), acc)
+		return gatherStatusURL(bufio.NewReader(resp.Body), getTags(addr), acc)
 	default:
 		return fmt.Errorf("%s returned unexpected content type %s", addr.String(), contentType)
 	}
@@ -269,7 +283,7 @@ type Status struct {
 	} `json:"stream"`
 }
 
-func gatherStatusUrl(r *bufio.Reader, tags map[string]string, acc telegraf.Accumulator) error {
+func gatherStatusURL(r *bufio.Reader, tags map[string]string, acc telegraf.Accumulator) error {
 	dec := json.NewDecoder(r)
 	status := &Status{}
 	if err := dec.Decode(status); err != nil {
@@ -304,7 +318,6 @@ func (s *Status) gatherProcessesMetrics(tags map[string]string, acc telegraf.Acc
 		},
 		tags,
 	)
-
 }
 
 func (s *Status) gatherConnectionsMetrics(tags map[string]string, acc telegraf.Accumulator) {

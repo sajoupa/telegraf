@@ -26,6 +26,9 @@ func TestRunningStats_Single(t *testing.T) {
 	if rs.Percentile(100) != 10.1 {
 		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(100))
 	}
+	if rs.Percentile(99.95) != 10.1 {
+		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(99.95))
+	}
 	if rs.Percentile(90) != 10.1 {
 		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(90))
 	}
@@ -66,6 +69,9 @@ func TestRunningStats_Duplicate(t *testing.T) {
 	}
 	if rs.Percentile(100) != 10.1 {
 		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(100))
+	}
+	if rs.Percentile(99.95) != 10.1 {
+		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(99.95))
 	}
 	if rs.Percentile(90) != 10.1 {
 		t.Errorf("Expected %v, got %v", 10.1, rs.Percentile(90))
@@ -108,11 +114,20 @@ func TestRunningStats(t *testing.T) {
 	if rs.Percentile(100) != 45 {
 		t.Errorf("Expected %v, got %v", 45, rs.Percentile(100))
 	}
+	if rs.Percentile(99.98) != 45 {
+		t.Errorf("Expected %v, got %v", 45, rs.Percentile(99.98))
+	}
 	if rs.Percentile(90) != 32 {
 		t.Errorf("Expected %v, got %v", 32, rs.Percentile(90))
 	}
+	if rs.Percentile(50.1) != 11 {
+		t.Errorf("Expected %v, got %v", 11, rs.Percentile(50.1))
+	}
 	if rs.Percentile(50) != 11 {
 		t.Errorf("Expected %v, got %v", 11, rs.Percentile(50))
+	}
+	if rs.Percentile(49.9) != 10 {
+		t.Errorf("Expected %v, got %v", 10, rs.Percentile(49.9))
 	}
 	if rs.Percentile(0) != 5 {
 		t.Errorf("Expected %v, got %v", 5, rs.Percentile(0))
@@ -147,8 +162,5 @@ func TestRunningStats_PercentileLimit(t *testing.T) {
 }
 
 func fuzzyEqual(a, b, epsilon float64) bool {
-	if math.Abs(a-b) > epsilon {
-		return false
-	}
-	return true
+	return math.Abs(a-b) <= epsilon
 }
